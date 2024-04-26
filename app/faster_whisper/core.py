@@ -60,7 +60,7 @@ def transcribe(
         segment_generator, info = model.transcribe(audio, beam_size=5, **options_dict)
         for segment in segment_generator:
             seg_dict = segment._asdict()
-            if "words" in seg_dict:
+            if "words" in seg_dict and seg_dict["words"]:
                 seg_dict["words"] = [to_whisper_word(word) for word in seg_dict["words"]]
             segments.append(seg_dict)
             text = text + segment.text
