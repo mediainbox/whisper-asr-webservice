@@ -1,45 +1,116 @@
-[tool.poetry]
+[project]
 name = "whisper-asr-webservice"
-version = "1.5.0-dev"
+version = "1.10.0-dev"
 description = "Whisper ASR Webservice is a general-purpose speech recognition webservice."
-homepage  = "https://github.com/ahmetoner/whisper-asr-webservice/"
-license = "https://github.com/ahmetoner/whisper-asr-webservice/blob/main/LICENCE"
-authors = [
-    "Ahmet Öner",
-    "Besim Alibegovic",
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "fastapi (>=0.115.14)",
+    "uvicorn[standard] (>=0.35.0)",
+    "python-multipart (>=0.0.20)",
+    "ffmpeg-python (>=0.2.0)",
+    "numpy (>=2.2.6)",
+    "openai-whisper (>=20250625)",
+    "faster-whisper (>=1.1.1)",
+    "whisperx (>=3.4.2)",
+    "tqdm (>=4.67.1)",
+    "llvmlite (>=0.44.0)",
+    "numba (>=0.61.2)",
 ]
+authors = [
+    { name = "Ahmet Öner" },
+    { name = "Besim Alibegovic" }
+]
+license = { text = "MIT" }
 readme = "README.md"
+keywords = ["speech-recognition", "whisper", "asr", "webservice"]
+
+[tool.poetry]
+requires-poetry = ">=2.0"
 packages = [{ include = "app" }]
 
+[project.urls]
+Homepage = "https://github.com/ahmetoner/whisper-asr-webservice/"
+Repository = "https://github.com/ahmetoner/whisper-asr-webservice"
+
+[project.scripts]
+whisper-asr-webservice = "app.webservice:start"
+
+[project.optional-dependencies]
+cpu = [
+    "torch (==2.7.1)",
+    "torchaudio (==2.7.1)"
+]
+cuda = [
+    "torch (==2.7.1+cu126)",
+    "torchaudio (==2.7.1+cu126)"
+]
+
 [[tool.poetry.source]]
-name = "pytorch"
+name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 priority = "explicit"
 
-[tool.poetry.dependencies]
-python = "^3.10"
-uvicorn = { extras = ["standard"], version = "^0.29.0" }
-gunicorn = "^21.2.0"
-tqdm = "^4.66.2"
-python-multipart = "^0.0.9"
-ffmpeg-python = "^0.2.0"
-fastapi = "^0.110.1"
-llvmlite = "^0.42.0"
-numba = "^0.59.1"
-openai-whisper = "^20231117"
-faster-whisper = "^1.0.1"
-torch = [
-  {markers = "sys_platform == 'darwin' and platform_machine == 'arm64'", url = "https://download.pytorch.org/whl/cpu/torch-1.13.1-cp310-none-macosx_11_0_arm64.whl"},
-  {markers = "sys_platform == 'linux' and platform_machine == 'arm64'", url="https://download.pytorch.org/whl/cpu/torch-1.13.1-cp310-none-macosx_11_0_arm64.whl"},
-  {markers = "sys_platform == 'darwin' and platform_machine == 'x86_64'", url = "https://download.pytorch.org/whl/cpu/torch-1.13.1-cp310-none-macosx_10_9_x86_64.whl"},
-  {markers = "sys_platform == 'linux' and platform_machine == 'aarch64'", url="https://download.pytorch.org/whl/torch-1.13.1-cp310-cp310-manylinux2014_aarch64.whl"},
-  {markers = "sys_platform == 'linux' and platform_machine == 'x86_64'", url="https://download.pytorch.org/whl/cpu/torch-1.13.1%2Bcpu-cp310-cp310-linux_x86_64.whl"},
-  {markers = "sys_platform == 'win' and platform_machine == 'amd64'", url="https://download.pytorch.org/whl/cpu/torch-1.13.1%2Bcpu-cp310-cp310-win_amd64.whl"},
-]
+[[tool.poetry.source]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu126"
+priority = "explicit"
 
-[tool.poetry.dev-dependencies]
-pytest = "^6.2.5"
+[tool.poetry.dependencies]
+torch = [
+    { markers = "extra == 'cpu' and extra != 'cuda' and platform_machine == 'x86_64' and sys_platform != 'darwin'", source = "pytorch-cpu"},
+    { markers = "extra == 'cuda' and extra != 'cpu' and platform_machine == 'x86_64' and sys_platform != 'darwin'", source = "pytorch-cuda"},
+    { markers = "extra == 'cpu' and extra != 'cuda' and sys_platform == 'darwin'", source = "pypi"},
+    { markers = "extra == 'cpu' and extra != 'cuda' and platform_machine == 'aarch64' and sys_platform != 'darwin'", source = "pypi"}
+ ]
+torchaudio = [
+    { markers = "extra == 'cpu' and extra != 'cuda' and platform_machine == 'x86_64' and sys_platform != 'darwin'", source = "pytorch-cpu"},
+    { markers = "extra == 'cuda' and extra != 'cpu' and platform_machine == 'x86_64' and sys_platform != 'darwin'", source = "pytorch-cuda"},
+    { markers = "extra == 'cpu' and extra != 'cuda' and sys_platform == 'darwin'", source = "pypi"},
+    { markers = "extra == 'cpu' and extra != 'cuda' and platform_machine == 'aarch64' and sys_platform != 'darwin'", source = "pypi"}
+ ]
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.3.4,<9.0.0"
+ruff = ">=0.9.6,<1.0.0"
+black = ">=25.1.0,<26.0.0"
+mkdocs-material = ">=9.6.4,<10.0.0"
+pymdown-extensions = ">=10.14.3,<11.0.0"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=2.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+skip-string-normalization = true
+line-length = 120
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "C901",  # too complex
+]
+
+[tool.ruff.lint.isort]
+order-by-type = true
+relative-imports-order = "closest-to-furthest"
+extra-standard-library = ["typing"]
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder",
+]
+known-first-party = []
