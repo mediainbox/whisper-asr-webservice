@@ -5,10 +5,16 @@ from typing import BinaryIO, Union
 
 import whisper
 from faster_whisper import WhisperModel
+from whisper.utils import ResultWriter, WriteJSON, WriteSRT, WriteTSV, WriteTXT, WriteVTT
 
 from app.asr_models.asr_model import ASRModel
 from app.config import CONFIG
-from app.utils import ResultWriter, WriteJSON, WriteSRT, WriteTSV, WriteTXT, WriteVTT
+
+
+def to_whisper_word(word):
+    word_dict = word._asdict()
+    word_dict["confidence"] = word_dict.pop("probability")
+    return word_dict
 
 
 class FasterWhisperASR(ASRModel):
@@ -55,7 +61,10 @@ class FasterWhisperASR(ASRModel):
             text = ""
             segment_generator, info = self.model.transcribe(audio, beam_size=5, **options_dict)
             for segment in segment_generator:
-                segments.append(segment)
+                seg_dict = segment._asdict()
+                if "words" in seg_dict and seg_dict["words"]:
+                    seg_dict["words"] = [to_whisper_word(word) for word in seg_dict["words"]]
+                segments.append(seg_dict)
                 text = text + segment.text
             result = {"language": options_dict.get("language", info.language), "segments": segments, "text": text}
 
@@ -84,13 +93,14 @@ class FasterWhisperASR(ASRModel):
         return detected_lang_code, detected_language_confidence
 
     def write_result(self, result: dict, file: BinaryIO, output: Union[str, None]):
+        options = {"max_line_width": 1000, "max_line_count": 10, "highlight_words": False}
         if output == "srt":
-            WriteSRT(ResultWriter).write_result(result, file=file)
+            WriteSRT(ResultWriter).write_result(result, file=file, options=options)
         elif output == "vtt":
-            WriteVTT(ResultWriter).write_result(result, file=file)
+            WriteVTT(ResultWriter).write_result(result, file=file, options=options)
         elif output == "tsv":
-            WriteTSV(ResultWriter).write_result(result, file=file)
+            WriteTSV(ResultWriter).write_result(result, file=file, options=options)
         elif output == "json":
-            WriteJSON(ResultWriter).write_result(result, file=file)
+            WriteJSON(ResultWriter).write_result(result, file=file, options=options)
         else:
-            WriteTXT(ResultWriter).write_result(result, file=file)
+            WriteTXT(ResultWriter).write_result(result, file=file, options=options)
