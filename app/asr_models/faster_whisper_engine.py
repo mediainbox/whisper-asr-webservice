@@ -1,3 +1,4 @@
+import dataclasses
 import time
 from io import StringIO
 from threading import Thread
@@ -12,9 +13,8 @@ from app.config import CONFIG
 
 
 def to_whisper_word(word):
-    word_dict = word._asdict()
-    word_dict["confidence"] = word_dict.pop("probability")
-    return word_dict
+    word["confidence"] = word.pop("probability")
+    return word
 
 
 class FasterWhisperASR(ASRModel):
@@ -61,7 +61,7 @@ class FasterWhisperASR(ASRModel):
             text = ""
             segment_generator, info = self.model.transcribe(audio, beam_size=5, **options_dict)
             for segment in segment_generator:
-                seg_dict = segment._asdict()
+                seg_dict = dataclasses.asdict(segment)
                 if "words" in seg_dict and seg_dict["words"]:
                     seg_dict["words"] = [to_whisper_word(word) for word in seg_dict["words"]]
                 segments.append(seg_dict)
