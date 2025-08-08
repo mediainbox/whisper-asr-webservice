@@ -1,7 +1,7 @@
 import importlib.metadata
 import os
 from os import path
-from typing import Annotated, Optional, Union
+from typing import Annotated, Union
 from urllib.parse import quote
 
 import click
@@ -127,18 +127,28 @@ async def detect_language(
     "--host",
     metavar="HOST",
     default="0.0.0.0",
+    show_default=True,
     help="Host for the webservice (default: 0.0.0.0)",
 )
 @click.option(
     "-p",
     "--port",
     metavar="PORT",
+    type=int,
     default=9000,
     help="Port for the webservice (default: 9000)",
 )
+@click.option(
+    "-w",
+    "--workers",
+    type=click.IntRange(1),
+    default=1,
+    show_default=True,
+    help="Number of worker processes",
+)
 @click.version_option(version=projectMetadata["Version"])
-def start(host: str, port: Optional[int] = None):
-    uvicorn.run(app, host=host, port=port)
+def start(host: str, port: int, workers: int):
+    uvicorn.run(app, host=host, port=port, workers=workers)
 
 
 if __name__ == "__main__":
