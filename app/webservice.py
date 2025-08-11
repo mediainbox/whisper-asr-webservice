@@ -148,7 +148,7 @@ async def detect_language(
 )
 @click.version_option(version=projectMetadata["Version"])
 def start(host: str, port: int, workers: int):
-    uvicorn.run(app, host=host, port=port, workers=workers)
+    uvicorn.run("app.webservice:app", host=host, port=port, workers=workers)
 
 
 if __name__ == "__main__":
