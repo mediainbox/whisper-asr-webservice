@@ -66,6 +66,7 @@ def separate_vocal(
     device: str,
     cfg: VocalSeparationConfig,
     chunks: int = 30,
+    use_tta: bool = True,
 ) -> np.ndarray:
     """
     Hacked from https://github.com/seanghay/vocal/blob/main/vocal/__init__.py.
@@ -159,7 +160,7 @@ def separate_vocal(
             x = x[:, :, : cfg.dim_f]
 
             # Model inference with memory optimization
-            spec_pred = (-model(-x) + model(x)) * 0.5
+            spec_pred = (-model(-x) + model(x)) * 0.5 if use_tta else model(x)
 
             # Post-processing on GPU
             x = torch.cat([spec_pred, _freq_pad.expand(spec_pred.shape[0], -1, -1, -1)], dim=2)
