@@ -64,7 +64,10 @@ def separate_vocal(
     model: torch.jit.ScriptModule,
     input_audio: np.ndarray,
     device: str,
-    cfg: VocalSeparationConfig,
+    n_fft: int,
+    sample_rate: int,
+    dim_f: int,
+    hop: int,
     chunks: int = 30,
     use_tta: bool = True,
 ) -> np.ndarray:
@@ -72,18 +75,18 @@ def separate_vocal(
     Hacked from https://github.com/seanghay/vocal/blob/main/vocal/__init__.py.
     """
     # Pre-compute constants
-    audio_chunk_size = chunks * cfg.sample_rate
+    audio_chunk_size = chunks * sample_rate
     dim_t = 2**8
     dim_c = 4
-    chunk_size = cfg.hop * (dim_t - 1)
-    n_bins = cfg.n_fft // 2 + 1
+    chunk_size = hop * (dim_t - 1)
+    n_bins = n_fft // 2 + 1
 
     # Move window to GPU once
-    window = torch.hann_window(window_length=cfg.n_fft, periodic=True).to(device)
+    window = torch.hann_window(window_length=n_fft, periodic=True).to(device)
 
     # Pre-compute frequency padding
     out_c = dim_c
-    _freq_pad = torch.zeros([1, out_c, n_bins - cfg.dim_f, dim_t], device=device)
+    _freq_pad = torch.zeros([1, out_c, n_bins - dim_f, dim_t], device=device)
 
     # Convert input to correct format
     if input_audio.ndim == 1:
@@ -92,7 +95,7 @@ def separate_vocal(
     # Convert mix to torch tensor and move to GPU
     input_audio = torch.from_numpy(input_audio).to(device)
 
-    margin = cfg.sample_rate if cfg.sample_rate < audio_chunk_size else audio_chunk_size
+    margin = sample_rate if sample_rate < audio_chunk_size else audio_chunk_size
     samples = input_audio.shape[-1]
 
     if chunks == 0 or samples < audio_chunk_size:
@@ -113,7 +116,7 @@ def separate_vocal(
 
     for chunk_mix_position, chunk_mix in enumerate(chunk_samples):
         n_sample = chunk_mix.shape[1]
-        trim = cfg.n_fft // 2
+        trim = n_fft // 2
         gen_size = chunk_size - 2 * trim
         pad = gen_size - n_sample % gen_size
 
@@ -146,8 +149,8 @@ def separate_vocal(
             # Perform STFT
             x = torch.stft(
                 x,
-                n_fft=cfg.n_fft,
-                hop_length=cfg.hop,
+                n_fft=n_fft,
+                hop_length=hop,
                 window=window,
                 center=True,
                 return_complex=True,
@@ -157,7 +160,7 @@ def separate_vocal(
 
             # Reshape efficiently
             x = x.reshape(-1, 2, 2, n_bins, dim_t).reshape(-1, dim_c, n_bins, dim_t)
-            x = x[:, :, : cfg.dim_f]
+            x = x[:, :, :dim_f]
 
             # Model inference with memory optimization
             spec_pred = (-model(-x) + model(x)) * 0.5 if use_tta else model(x)
@@ -170,7 +173,7 @@ def separate_vocal(
 
             # Inverse STFT
             x = torch.view_as_complex(x)
-            x = torch.istft(x, n_fft=cfg.n_fft, hop_length=cfg.hop, window=window, center=True)
+            x = torch.istft(x, n_fft=n_fft, hop_length=hop, window=window, center=True)
             x = x.reshape(-1, c, chunk_size)
 
             # Move to CPU only at the end
