@@ -48,7 +48,7 @@ def load_uvr_model_and_config(
     model_id: str = "UVR-MDX-NET-Voc_FT",
     repo_id: str = "mediainbox/uvr-mdx-models",
     device: str = "cuda",
-):
+) -> tuple[torch.jit.ScriptModule, VocalSeparationConfig]:
     device = device.lower()
     model_path = hf_hub_download(repo_id, f"{model_id}.pt")
     cfg_path = hf_hub_download(repo_id, f"{model_id}.json")
@@ -61,11 +61,11 @@ def load_uvr_model_and_config(
 
 
 def separate_vocal(
-    model,
-    mix,
-    device,
+    model: torch.jit.ScriptModule,
+    input_audio: np.ndarray,
+    device: str,
     cfg: VocalSeparationConfig,
-    chunks=30,
+    chunks: int = 30,
 ) -> np.ndarray:
     """
     Hacked from https://github.com/seanghay/vocal/blob/main/vocal/__init__.py.
@@ -85,14 +85,14 @@ def separate_vocal(
     _freq_pad = torch.zeros([1, out_c, n_bins - cfg.dim_f, dim_t], device=device)
 
     # Convert input to correct format
-    if mix.ndim == 1:
-        mix = np.asfortranarray([mix, mix])
+    if input_audio.ndim == 1:
+        input_audio = np.asfortranarray([input_audio, input_audio])
 
     # Convert mix to torch tensor and move to GPU
-    mix = torch.from_numpy(mix).to(device)
+    input_audio = torch.from_numpy(input_audio).to(device)
 
     margin = cfg.sample_rate if cfg.sample_rate < audio_chunk_size else audio_chunk_size
-    samples = mix.shape[-1]
+    samples = input_audio.shape[-1]
 
     if chunks == 0 or samples < audio_chunk_size:
         audio_chunk_size = samples
@@ -103,15 +103,15 @@ def separate_vocal(
         s_margin = 0 if skip == 0 else margin
         end = min(skip + audio_chunk_size + margin, samples)
         start = skip - s_margin
-        chunk_samples.append(mix[:, start:end])
+        chunk_samples.append(input_audio[:, start:end])
         if end == samples:
             break
 
     margin_size = margin
     chunked_sources = []
 
-    for cmix_position, cmix in enumerate(chunk_samples):
-        n_sample = cmix.shape[1]
+    for chunk_mix_position, chunk_mix in enumerate(chunk_samples):
+        n_sample = chunk_mix.shape[1]
         trim = cfg.n_fft // 2
         gen_size = chunk_size - 2 * trim
         pad = gen_size - n_sample % gen_size
@@ -120,7 +120,7 @@ def separate_vocal(
         mix_p = torch.cat(
             [
                 torch.zeros(2, trim, device=device),
-                cmix,
+                chunk_mix,
                 torch.zeros(2, pad, device=device),
                 torch.zeros(2, trim, device=device),
             ],
@@ -177,8 +177,8 @@ def separate_vocal(
 
             tar_signal = tar_waves[:, :, trim:-trim].transpose(0, 1).reshape(2, -1).numpy()[:, :-pad]
 
-            start = 0 if cmix_position == 0 else margin_size
-            end = None if cmix_position == len(chunk_samples) - 1 else -margin_size
+            start = 0 if chunk_mix_position == 0 else margin_size
+            end = None if chunk_mix_position == len(chunk_samples) - 1 else -margin_size
             if margin_size == 0:
                 end = None
 
