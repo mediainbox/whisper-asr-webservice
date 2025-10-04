@@ -1,4 +1,5 @@
 import importlib.metadata
+import io
 import os
 from os import path
 from pathlib import Path
@@ -136,6 +137,38 @@ async def asr(
         headers={
             "Asr-Engine": CONFIG.ASR_ENGINE,
             "Content-Disposition": f'attachment; filename="{quote(audio_file.filename)}.{output}"',
+        },
+    )
+
+
+@app.post("/separate-vocals", tags=["Endpoints"])
+async def separate_vocals(
+    audio_file: UploadFile = File(...),  # noqa: B008
+):
+    original_name = getattr(audio_file, "filename", "") or "audio.wav"
+    suffix = Path(original_name).suffix or ".wav"
+    stem = Path(original_name).stem or "audio"
+
+    async_bytes = await audio_file.read()
+    with TemporaryDirectory() as td:
+        td = Path(td)
+        in_path = td / f"in{suffix}"
+        out_path = td / "vocals.wav"
+
+        with open(in_path, "wb") as f_in:
+            f_in.write(async_bytes)
+
+        separate_vocals_from_file(in_path, out_path)
+
+        with open(out_path, "rb") as f_vocals:
+            data = f_vocals.read()
+
+    download_name = f"{stem}_vocals.wav"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": f'attachment; filename="{quote(download_name)}"',
         },
     )
 
