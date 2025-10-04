@@ -1,6 +1,7 @@
 import json
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import librosa
@@ -223,8 +224,8 @@ def separate_vocals_from_array(
 
 
 def separate_vocals_from_file(
-    input_path: str,
-    output_path: str,
+    input_path: str | Path,
+    output_path: str | Path,
     model_id: str = "UVR-MDX-NET-Voc_FT",
     repo_id: str = "mediainbox/uvr-mdx-models",
     device: str | None = None,
@@ -232,6 +233,9 @@ def separate_vocals_from_file(
     use_tta: bool = True,
 ) -> None:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
+
+    input_path = str(input_path)
+    output_path = str(output_path)
 
     # 1. Load model and config
     model, cfg = get_model_and_config(
