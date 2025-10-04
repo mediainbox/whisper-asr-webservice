@@ -1,6 +1,7 @@
 import importlib.metadata
 import os
 from os import path
+from pathlib import Path
 from typing import Annotated, Union
 from urllib.parse import quote
 
@@ -11,6 +12,8 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from whisper import tokenizer
+from tempfile import TemporaryDirectory
+from app.voice_separation import separate_vocals_from_file
 
 from app.config import CONFIG
 from app.factory.asr_model_factory import ASRModelFactory
@@ -28,7 +31,10 @@ app = FastAPI(
     version=projectMetadata["Version"],
     contact={"url": projectMetadata["Home-page"]},
     swagger_ui_parameters={"defaultModelsExpandDepth": -1},
-    license_info={"name": "MIT License", "url": "https://github.com/ahmetoner/whisper-asr-webservice/blob/main/LICENCE"},
+    license_info={
+        "name": "MIT License",
+        "url": "https://github.com/ahmetoner/whisper-asr-webservice/blob/main/LICENCE",
+    },
 )
 
 assets_path = os.getcwd() + "/swagger-ui-assets"
@@ -59,6 +65,13 @@ async def asr(
     task: Union[str, None] = Query(default="transcribe", enum=["transcribe", "translate"]),
     language: Union[str, None] = Query(default=None, enum=LANGUAGE_CODES),
     initial_prompt: Union[str, None] = Query(default=None),
+    separate_vocals: Annotated[
+        bool | None,
+        Query(
+            description="Preprocess with voice separation (fast-whisper only)",
+            include_in_schema=(True if CONFIG.ASR_ENGINE == "faster_whisper" else False),
+        ),
+    ] = False,
     vad_filter: Annotated[
         bool | None,
         Query(
@@ -88,8 +101,27 @@ async def asr(
     ),
     output: Union[str, None] = Query(default="txt", enum=["txt", "vtt", "srt", "tsv", "json"]),
 ):
+    if separate_vocals:
+        suffix = Path(getattr(audio_file, "filename", "")).suffix or ".wav"
+        async_bytes = await audio_file.read()
+
+        with TemporaryDirectory() as td:
+            td = Path(td)
+
+            in_path, out_path = td / f"in{suffix}", td / "vocals.wav"
+
+            with open(in_path, "wb") as f_in:
+                f_in.write(async_bytes)
+
+            separate_vocals_from_file(in_path, out_path)
+
+            with open(out_path, "rb") as f_vocals:
+                audio_np = load_audio(f_vocals, encode=True)
+    else:
+        audio_np = load_audio(audio_file.file, encode)
+
     result = asr_model.transcribe(
-        load_audio(audio_file.file, encode),
+        audio_np,
         task,
         language,
         initial_prompt,
