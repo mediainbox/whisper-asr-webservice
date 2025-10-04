@@ -1,8 +1,11 @@
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
+import librosa
 import numpy as np
+import soundfile
 import torch
 from huggingface_hub import hf_hub_download
 
@@ -44,18 +47,53 @@ class VocalSeparationConfig:
         }
 
 
-def load_uvr_model_and_config(
+def _maybe_compile_tensorrt(
+    m: torch.jit.ScriptModule, cfg: VocalSeparationConfig, device: str
+) -> torch.jit.ScriptModule:
+    if device != "cuda":
+        return m
+    try:
+        import torch_tensorrt
+
+        # TODO: Add cache in torch.compile(...)
+        m = torch.compile(
+            m,
+            backend="torch_tensorrt",
+            dynamic=False,
+            options={
+                "truncate_long_and_double": True,
+                "enabled_precisions": {torch.float16, torch.float32},
+                "workspace_size": 1 << 30,
+            },
+        )
+        # Warmup w/ 6 chunk corresponds to 30s audio files
+        x = torch.randn(6, cfg.dim_c, cfg.dim_f, cfg.dim_t, device="cuda", dtype=torch.float32)
+        for _ in range(3):
+            with torch.inference_mode():
+                m(x)
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+    return m
+
+
+@lru_cache(maxsize=1)
+def get_model_and_config(
     model_id: str = "UVR-MDX-NET-Voc_FT",
     repo_id: str = "mediainbox/uvr-mdx-models",
     device: str = "cuda",
+    use_tensorrt: bool = True,
 ) -> tuple[torch.jit.ScriptModule, VocalSeparationConfig]:
     device = device.lower()
     model_path = hf_hub_download(repo_id, f"{model_id}.pt")
     cfg_path = hf_hub_download(repo_id, f"{model_id}.json")
 
-    model = torch.jit.load(model_path, map_location=device)
+    model = torch.jit.load(model_path, map_location=device).eval()
     with open(cfg_path, "r") as f:
         cfg = VocalSeparationConfig.from_dict(json.load(f))
+
+    if use_tensorrt:
+        model = _maybe_compile_tensorrt(model, cfg, device)
 
     return model, cfg
 
@@ -189,3 +227,72 @@ def separate_vocal(
         chunked_sources.append([tar_signal[:, start:end]])
 
     return np.concatenate(chunked_sources, axis=-1)[0]
+
+
+def separate_vocals_from_array(
+    audio: np.ndarray,
+    model_id: str = "UVR-MDX-NET-Voc_FT",
+    repo_id: str = "mediainbox/uvr-mdx-models",
+    device: str | None = None,
+    chunks: int = 30,
+    use_tta: bool = True,
+    use_tensorrt: bool = True,
+) -> np.ndarray:
+    device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
+    model, cfg = get_model_and_config(
+        model_id=model_id,
+        repo_id=repo_id,
+        device=device,
+        use_tensorrt=use_tensorrt,
+    )
+    return separate_vocal(
+        model=model,
+        input_audio=audio,
+        device=device,
+        n_fft=cfg.n_fft,
+        sample_rate=cfg.sample_rate,
+        dim_f=cfg.dim_f,
+        hop=cfg.hop,
+        chunks=chunks,
+        use_tta=use_tta,
+    )
+
+
+def separate_vocals_from_file(
+    input_path: str,
+    output_path: str,
+    model_id: str = "UVR-MDX-NET-Voc_FT",
+    repo_id: str = "mediainbox/uvr-mdx-models",
+    device: str | None = None,
+    chunks: int = 30,
+    use_tta: bool = True,
+    use_tensorrt: bool = True,
+) -> None:
+    device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
+
+    # 1. Load model and config
+    model, cfg = get_model_and_config(
+        model_id=model_id,
+        repo_id=repo_id,
+        device=device,
+        use_tensorrt=use_tensorrt,
+    )
+
+    # 2. Read audio accordingly
+    audio, _ = librosa.load(input_path, sr=cfg.sample_rate, mono=False)
+
+    # 3. Separate vocals
+    audio_vocals = separate_vocal(
+        model=model,
+        input_audio=audio,
+        device=device,
+        n_fft=cfg.n_fft,
+        chunks=chunks,
+        sample_rate=cfg.sample_rate,
+        dim_f=cfg.dim_f,
+        hop=cfg.hop,
+        use_tta=use_tta,
+    )
+
+    # 4. Save vocals
+    soundfile.write(output_path, audio_vocals.T, samplerate=cfg.sample_rate)
