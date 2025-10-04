@@ -47,42 +47,11 @@ class VocalSeparationConfig:
         }
 
 
-def _maybe_compile_tensorrt(
-    m: torch.jit.ScriptModule, cfg: VocalSeparationConfig, device: str
-) -> torch.jit.ScriptModule:
-    if device != "cuda":
-        return m
-    try:
-        import torch_tensorrt
-
-        # TODO: Add cache in torch.compile(...)
-        m = torch.compile(
-            m,
-            backend="torch_tensorrt",
-            dynamic=False,
-            options={
-                "truncate_long_and_double": True,
-                "enabled_precisions": {torch.float16, torch.float32},
-                "workspace_size": 1 << 30,
-            },
-        )
-        # Warmup w/ 6 chunk corresponds to 30s audio files
-        x = torch.randn(6, cfg.dim_c, cfg.dim_f, cfg.dim_t, device="cuda", dtype=torch.float32)
-        for _ in range(3):
-            with torch.inference_mode():
-                m(x)
-            torch.cuda.synchronize()
-    except Exception:
-        pass
-    return m
-
-
 @lru_cache(maxsize=1)
 def get_model_and_config(
     model_id: str = "UVR-MDX-NET-Voc_FT",
     repo_id: str = "mediainbox/uvr-mdx-models",
     device: str = "cuda",
-    use_tensorrt: bool = True,
 ) -> tuple[torch.jit.ScriptModule, VocalSeparationConfig]:
     device = device.lower()
     model_path = hf_hub_download(repo_id, f"{model_id}.pt")
@@ -91,9 +60,6 @@ def get_model_and_config(
     model = torch.jit.load(model_path, map_location=device).eval()
     with open(cfg_path, "r") as f:
         cfg = VocalSeparationConfig.from_dict(json.load(f))
-
-    if use_tensorrt:
-        model = _maybe_compile_tensorrt(model, cfg, device)
 
     return model, cfg
 
@@ -236,14 +202,12 @@ def separate_vocals_from_array(
     device: str | None = None,
     chunks: int = 30,
     use_tta: bool = True,
-    use_tensorrt: bool = True,
 ) -> np.ndarray:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
     model, cfg = get_model_and_config(
         model_id=model_id,
         repo_id=repo_id,
         device=device,
-        use_tensorrt=use_tensorrt,
     )
     return separate_vocal(
         model=model,
@@ -266,7 +230,6 @@ def separate_vocals_from_file(
     device: str | None = None,
     chunks: int = 30,
     use_tta: bool = True,
-    use_tensorrt: bool = True,
 ) -> None:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
 
@@ -275,7 +238,6 @@ def separate_vocals_from_file(
         model_id=model_id,
         repo_id=repo_id,
         device=device,
-        use_tensorrt=use_tensorrt,
     )
 
     # 2. Read audio accordingly
