@@ -77,7 +77,7 @@ def separate_vocal(
     hop: int,
     chunks: int = 30,
     use_tta: bool = False,
-    precision: str = "fp32",
+    precision: str = "fp16",
 ) -> np.ndarray:
     """
     Hacked from https://github.com/seanghay/vocal/blob/main/vocal/__init__.py.
@@ -217,7 +217,7 @@ def separate_vocals_from_array(
     device: str | None = None,
     chunks: int = 30,
     use_tta: bool = False,
-    precision: str = "fp32",
+    precision: str = "fp16",
 ) -> np.ndarray:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
     model, cfg = get_model_and_config(
@@ -247,7 +247,7 @@ def separate_vocals_from_file(
     device: str | None = None,
     chunks: int = 30,
     use_tta: bool = False,
-    precision: str = "fp32",
+    precision: str = "fp16",
 ) -> None:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
 
