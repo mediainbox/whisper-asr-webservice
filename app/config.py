@@ -45,3 +45,7 @@ class CONFIG:
     SUBTITLE_MAX_LINE_WIDTH = int(os.getenv("SUBTITLE_MAX_LINE_WIDTH", 1000))
     SUBTITLE_MAX_LINE_COUNT = int(os.getenv("SUBTITLE_MAX_LINE_COUNT", 2))
     SUBTITLE_HIGHLIGHT_WORDS = os.getenv("SUBTITLE_HIGHLIGHT_WORDS", "false").lower() == "true"
+
+    # Voice separation options
+    VOICE_SEPARATION_MODEL = os.getenv("VOICE_SEPARATION_MODEL", "UVR-MDX-NET-Inst_HQ_4")
+    VOICE_SEPARATION_PRECISION = os.getenv("VOICE_SEPARATION_PRECISION", "fp16")
