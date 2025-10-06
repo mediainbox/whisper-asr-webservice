@@ -1,4 +1,6 @@
 import json
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -74,11 +76,15 @@ def separate_vocal(
     dim_f: int,
     hop: int,
     chunks: int = 30,
-    use_tta: bool = True,
+    use_tta: bool = False,
+    precision: str = "fp32",
 ) -> np.ndarray:
     """
     Hacked from https://github.com/seanghay/vocal/blob/main/vocal/__init__.py.
     """
+    device = device.lower()
+    is_cuda = device.startswith("cuda")
+
     # Pre-compute constants
     audio_chunk_size = chunks * sample_rate
     dim_t = 2**8
@@ -118,6 +124,9 @@ def separate_vocal(
 
     margin_size = margin
     chunked_sources = []
+
+    amp_enabled = is_cuda and precision in ("fp16", "bf16")
+    amp_dtype = torch.float16 if precision == "fp16" else (torch.bfloat16 if precision == "bf16" else None)
 
     for chunk_mix_position, chunk_mix in enumerate(chunk_samples):
         n_sample = chunk_mix.shape[1]
@@ -168,9 +177,14 @@ def separate_vocal(
             x = x[:, :, :dim_f]
 
             # Model inference with memory optimization
-            spec_pred = (-model(-x) + model(x)) * 0.5 if use_tta else model(x)
+            if amp_enabled:
+                with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                    spec_pred = (-model(-x) + model(x)) * 0.5 if use_tta else model(x)
+            else:
+                spec_pred = (-model(-x) + model(x)) * 0.5 if use_tta else model(x)
 
             # Post-processing on GPU
+            spec_pred = spec_pred.float()
             x = torch.cat([spec_pred, _freq_pad.expand(spec_pred.shape[0], -1, -1, -1)], dim=2)
             c = 2
             x = x.reshape(-1, c, 2, n_bins, dim_t).reshape(-1, 2, n_bins, dim_t)
@@ -203,6 +217,7 @@ def separate_vocals_from_array(
     device: str | None = None,
     chunks: int = 30,
     use_tta: bool = True,
+    precision: str = "fp32",
 ) -> np.ndarray:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
     model, cfg = get_model_and_config(
@@ -220,6 +235,7 @@ def separate_vocals_from_array(
         hop=cfg.hop,
         chunks=chunks,
         use_tta=use_tta,
+        precision=precision,
     )
 
 
@@ -231,6 +247,7 @@ def separate_vocals_from_file(
     device: str | None = None,
     chunks: int = 30,
     use_tta: bool = True,
+    precision: str = "fp32",
 ) -> None:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
 
@@ -258,6 +275,7 @@ def separate_vocals_from_file(
         dim_f=cfg.dim_f,
         hop=cfg.hop,
         use_tta=use_tta,
+        precision=precision,
     )
 
     # 4. Save vocals
