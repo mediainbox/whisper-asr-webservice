@@ -52,7 +52,7 @@ class VocalSeparationConfig:
 
 @lru_cache(maxsize=1)
 def get_model_and_config(
-    model_id: str = "UVR-MDX-NET-Voc_FT",
+    model_id: str = "UVR-MDX-NET-Inst_HQ_4",
     repo_id: str = "mediainbox/uvr-mdx-models",
     device: str = "cuda",
 ) -> tuple[torch.jit.ScriptModule, VocalSeparationConfig]:
@@ -212,11 +212,11 @@ def separate_vocal(
 
 def separate_vocals_from_array(
     audio: np.ndarray,
-    model_id: str = "UVR-MDX-NET-Voc_FT",
+    model_id: str = "UVR-MDX-NET-Inst_HQ_4",
     repo_id: str = "mediainbox/uvr-mdx-models",
     device: str | None = None,
     chunks: int = 30,
-    use_tta: bool = True,
+    use_tta: bool = False,
     precision: str = "fp32",
 ) -> np.ndarray:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
@@ -242,11 +242,11 @@ def separate_vocals_from_array(
 def separate_vocals_from_file(
     input_path: str | Path,
     output_path: str | Path,
-    model_id: str = "UVR-MDX-NET-Voc_FT",
+    model_id: str = "UVR-MDX-NET-Inst_HQ_4",
     repo_id: str = "mediainbox/uvr-mdx-models",
     device: str | None = None,
     chunks: int = 30,
-    use_tta: bool = True,
+    use_tta: bool = False,
     precision: str = "fp32",
 ) -> None:
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
