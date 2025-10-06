@@ -23,13 +23,17 @@ class VocalSeparationConfig:
     dim_c: int
     dim_f: int
     dim_t: int
+    target: str
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "VocalSeparationConfig":
-        required = ["name", "sample_rate", "n_fft", "hop", "window", "dim_c", "dim_f", "dim_t"]
+        required = ["name", "sample_rate", "n_fft", "hop", "window", "dim_c", "dim_f", "dim_t", "target"]
         missing = [k for k in required if k not in d]
         if missing:
             raise ValueError(f"Missing config keys: {missing}")
+        target = str(d["target"]).lower()
+        if target not in ("vocals", "instrumental"):
+            raise ValueError("config.target must be 'vocals' or 'instrumental'")
         return VocalSeparationConfig(
             name=str(d["name"]),
             sample_rate=int(d["sample_rate"]),
@@ -39,15 +43,11 @@ class VocalSeparationConfig:
             dim_c=int(d["dim_c"]),
             dim_f=int(d["dim_f"]),
             dim_t=int(d["dim_t"]),
+            target=target,
         )
 
-    def as_separate_kwargs(self) -> dict[str, Any]:
-        return {
-            "sample_rate": self.sample_rate,
-            "n_fft": self.n_fft,
-            "hop": self.hop,
-            "dim_f": self.dim_f,
-        }
+    def outputs_instrumental(self) -> bool:
+        return self.target == "instrumental"
 
 
 @lru_cache(maxsize=1)
@@ -264,8 +264,8 @@ def separate_vocals_from_file(
     # 2. Read audio accordingly
     audio, _ = librosa.load(input_path, sr=cfg.sample_rate, mono=False)
 
-    # 3. Separate vocals
-    audio_vocals = separate_vocal(
+    # 3. Run model
+    target_est = separate_vocal(
         model=model,
         input_audio=audio,
         device=device,
@@ -278,5 +278,13 @@ def separate_vocals_from_file(
         precision=precision,
     )
 
-    # 4. Save vocals
+    # 4. Convert to vocals if the model predicts instrumental
+    audio_vocals = audio - target_est if cfg.outputs_instrumental() else target_est
+
+    # 5. Avoid clipping after subtraction
+    peak = np.max(np.abs(audio_vocals))
+    if np.isfinite(peak) and peak > 1.0:
+        audio_vocals = audio_vocals / peak
+
+    # 6. Save vocals
     soundfile.write(output_path, audio_vocals.T, samplerate=cfg.sample_rate)
