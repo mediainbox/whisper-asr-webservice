@@ -114,7 +114,12 @@ async def asr(
             with open(in_path, "wb") as f_in:
                 f_in.write(async_bytes)
 
-            separate_vocals_from_file(in_path, out_path)
+            separate_vocals_from_file(
+                in_path,
+                out_path,
+                model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                precision=CONFIG.VOICE_SEPARATION_PRECISION,
+            )
 
             with open(out_path, "rb") as f_vocals:
                 audio_np = load_audio(f_vocals, encode=True)
@@ -158,7 +163,12 @@ async def separate_vocals(
         with open(in_path, "wb") as f_in:
             f_in.write(async_bytes)
 
-        separate_vocals_from_file(in_path, out_path)
+        separate_vocals_from_file(
+            in_path,
+            out_path,
+            model_id=CONFIG.VOICE_SEPARATION_MODEL,
+            precision=CONFIG.VOICE_SEPARATION_PRECISION,
+        )
 
         with open(out_path, "rb") as f_vocals:
             data = f_vocals.read()
