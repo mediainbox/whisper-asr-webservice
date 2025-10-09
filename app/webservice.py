@@ -5,6 +5,7 @@ from os import path
 from pathlib import Path
 from typing import Annotated, Union
 from urllib.parse import quote
+import logging
 
 import click
 import uvicorn
@@ -18,7 +19,9 @@ from app.voice_separation import separate_vocals_from_file
 
 from app.config import CONFIG
 from app.factory.asr_model_factory import ASRModelFactory
-from app.utils import load_audio
+from app.utils import load_audio, timer
+
+logger = logging.getLogger(__name__)
 
 asr_model = ASRModelFactory.create_asr_model()
 asr_model.load_model()
@@ -101,9 +104,15 @@ async def asr(
         include_in_schema=(True if CONFIG.ASR_ENGINE == "whisperx" else False),
     ),
     output: Union[str, None] = Query(default="txt", enum=["txt", "vtt", "srt", "tsv", "json"]),
+    verbose: bool = Query(default=False, description="Print timing info for preprocessing and transcription"),
 ):
+    filename = getattr(audio_file, "filename", "") or "audio.wav"
+
+    if verbose:
+        logger.info("[timing] file: %s", filename)
+
     if separate_vocals:
-        suffix = Path(getattr(audio_file, "filename", "")).suffix or ".wav"
+        suffix = Path(filename).suffix or ".wav"
         async_bytes = await audio_file.read()
 
         with TemporaryDirectory() as td:
@@ -114,34 +123,38 @@ async def asr(
             with open(in_path, "wb") as f_in:
                 f_in.write(async_bytes)
 
-            separate_vocals_from_file(
-                in_path,
-                out_path,
-                model_id=CONFIG.VOICE_SEPARATION_MODEL,
-                precision=CONFIG.VOICE_SEPARATION_PRECISION,
-            )
+            with timer("separate_vocals", enabled=verbose):
+                separate_vocals_from_file(
+                    in_path,
+                    out_path,
+                    model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                    precision=CONFIG.VOICE_SEPARATION_PRECISION,
+                )
 
             with open(out_path, "rb") as f_vocals:
-                audio_np = load_audio(f_vocals, encode=True)
+                with timer("load_audio(vocals)", enabled=verbose):
+                    audio_np = load_audio(f_vocals, encode=True)
     else:
-        audio_np = load_audio(audio_file.file, encode)
+        with timer("load_audio(original)", enabled=verbose):
+            audio_np = load_audio(audio_file.file, encode)
 
-    result = asr_model.transcribe(
-        audio_np,
-        task,
-        language,
-        initial_prompt,
-        vad_filter,
-        word_timestamps,
-        {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
-        output,
-    )
+    with timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose):
+        result = asr_model.transcribe(
+            audio_np,
+            task,
+            language,
+            initial_prompt,
+            vad_filter,
+            word_timestamps,
+            {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
+            output,
+        )
     return StreamingResponse(
         result,
         media_type="text/plain",
         headers={
             "Asr-Engine": CONFIG.ASR_ENGINE,
-            "Content-Disposition": f'attachment; filename="{quote(audio_file.filename)}.{output}"',
+            "Content-Disposition": f'attachment; filename="{quote(filename)}.{output}"',
         },
     )
 
@@ -149,10 +162,15 @@ async def asr(
 @app.post("/separate-vocals", tags=["Endpoints"])
 async def separate_vocals(
     audio_file: UploadFile = File(...),  # noqa: B008
+    verbose: bool = Query(default=False, description="Print timing info for voice separation"),
 ):
-    original_name = getattr(audio_file, "filename", "") or "audio.wav"
-    suffix = Path(original_name).suffix or ".wav"
-    stem = Path(original_name).stem or "audio"
+    filename = getattr(audio_file, "filename", "") or "audio.wav"
+
+    if verbose:
+        logger.info("[timing] file: %s", filename)
+
+    suffix = Path(filename).suffix or ".wav"
+    stem = Path(filename).stem or "audio"
 
     async_bytes = await audio_file.read()
     with TemporaryDirectory() as td:
@@ -163,12 +181,13 @@ async def separate_vocals(
         with open(in_path, "wb") as f_in:
             f_in.write(async_bytes)
 
-        separate_vocals_from_file(
-            in_path,
-            out_path,
-            model_id=CONFIG.VOICE_SEPARATION_MODEL,
-            precision=CONFIG.VOICE_SEPARATION_PRECISION,
-        )
+        with timer("separate_vocals", enabled=verbose):
+            separate_vocals_from_file(
+                in_path,
+                out_path,
+                model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                precision=CONFIG.VOICE_SEPARATION_PRECISION,
+            )
 
         with open(out_path, "rb") as f_vocals:
             data = f_vocals.read()

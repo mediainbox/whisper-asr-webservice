@@ -1,13 +1,18 @@
 import json
 import os
+import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from typing import BinaryIO, TextIO
+import logging
 
 import ffmpeg
 import numpy as np
 from faster_whisper.utils import format_timestamp
 
 from app.config import CONFIG
+
+logger = logging.getLogger(__name__)
 
 
 class ResultWriter:
@@ -125,3 +130,16 @@ def load_audio(file: BinaryIO, encode=True, sr: int = CONFIG.SAMPLE_RATE):
         out = file.read()
 
     return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
+
+
+@contextmanager
+def timer(label: str, enabled: bool = False):
+    if not enabled:
+        yield
+        return
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = time.perf_counter() - start
+        logger.info("[timing] %s: %.3fs", label, elapsed)
