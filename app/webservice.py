@@ -21,6 +21,11 @@ from app.config import CONFIG
 from app.factory.asr_model_factory import ASRModelFactory
 from app.utils import load_audio, timer
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 asr_model = ASRModelFactory.create_asr_model()
