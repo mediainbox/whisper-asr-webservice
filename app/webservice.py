@@ -114,7 +114,7 @@ async def asr(
     filename = getattr(audio_file, "filename", "") or "audio.wav"
 
     if verbose:
-        logger.info("[timing] file: %s", filename)
+        logger.info("Analyzing file: %s", filename)
 
     if separate_vocals:
         suffix = Path(filename).suffix or ".wav"
@@ -172,7 +172,7 @@ async def separate_vocals(
     filename = getattr(audio_file, "filename", "") or "audio.wav"
 
     if verbose:
-        logger.info("[timing] file: %s", filename)
+        logger.info("Analyzing file: %s", filename)
 
     suffix = Path(filename).suffix or ".wav"
     stem = Path(filename).stem or "audio"
