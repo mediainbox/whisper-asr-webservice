@@ -18,28 +18,26 @@ def to_whisper_word(word):
 
 
 class FasterWhisperASR(ASRModel):
-
     def load_model(self):
-
         self.model = WhisperModel(
             model_size_or_path=CONFIG.MODEL_NAME,
             device=CONFIG.DEVICE,
             compute_type=CONFIG.MODEL_QUANTIZATION,
-            download_root=CONFIG.MODEL_PATH
+            download_root=CONFIG.MODEL_PATH,
         )
 
         Thread(target=self.monitor_idleness, daemon=True).start()
 
     def transcribe(
-            self,
-            audio,
-            task: Union[str, None],
-            language: Union[str, None],
-            initial_prompt: Union[str, None],
-            vad_filter: Union[bool, None],
-            word_timestamps: Union[bool, None],
-            options: Union[dict, None],
-            output,
+        self,
+        audio,
+        task: Union[str, None],
+        language: Union[str, None],
+        initial_prompt: Union[str, None],
+        vad_filter: Union[bool, None],
+        word_timestamps: Union[bool, None],
+        options: Union[dict, None],
+        output,
     ):
         self.last_activity_time = time.time()
 
@@ -75,11 +73,11 @@ class FasterWhisperASR(ASRModel):
         return output_file
 
     def language_detection(self, audio):
-
         self.last_activity_time = time.time()
 
         with self.model_lock:
-            if self.model is None: self.load_model()
+            if self.model is None:
+                self.load_model()
 
         # load audio and pad/trim it to fit 30 seconds
         audio = whisper.pad_or_trim(audio)
