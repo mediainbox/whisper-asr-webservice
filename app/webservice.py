@@ -1,6 +1,7 @@
 import importlib.metadata
 import io
 import os
+from contextlib import asynccontextmanager
 from os import path
 from pathlib import Path
 from typing import Annotated, Union
@@ -8,6 +9,7 @@ from urllib.parse import quote
 import logging
 
 import click
+import newrelic.agent
 import uvicorn
 from fastapi import FastAPI, File, Query, UploadFile, applications
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -29,12 +31,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 asr_model = ASRModelFactory.create_asr_model()
-asr_model.load_model()
 
 LANGUAGE_CODES = sorted(tokenizer.LANGUAGES.keys())
 
 projectMetadata = importlib.metadata.metadata("whisper-asr-webservice")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asr_model.load_model()
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title=projectMetadata["Name"].title().replace("-", " "),
     description=projectMetadata["Summary"],
     version=projectMetadata["Version"],
@@ -67,6 +77,7 @@ async def index():
     return "/docs"
 
 
+@newrelic.agent.web_transaction(name="POST /asr", group="ASR")
 @app.post("/asr", tags=["Endpoints"])
 async def asr(
     audio_file: UploadFile = File(...),  # noqa: B008
@@ -113,6 +124,22 @@ async def asr(
 ):
     filename = getattr(audio_file, "filename", "") or "audio.wav"
 
+    newrelic.agent.add_custom_attributes(
+        {
+            "asr.engine": CONFIG.ASR_ENGINE,
+            "asr.model": CONFIG.MODEL_NAME,
+            "asr.device": CONFIG.DEVICE,
+            "asr.compute_type": CONFIG.MODEL_QUANTIZATION,
+            "asr.encode": bool(encode),
+            "asr.task": task or "",
+            "asr.language": language or "",
+            "asr.vad_filter": bool(vad_filter),
+            "asr.word_timestamps": bool(word_timestamps),
+            "asr.separate_vocals": bool(separate_vocals),
+            "asr.output": output or "",
+        }
+    )
+
     if verbose:
         logger.info("Analyzing file: %s", filename)
 
@@ -128,7 +155,10 @@ async def asr(
             with open(in_path, "wb") as f_in:
                 f_in.write(async_bytes)
 
-            with timer("separate_vocals", enabled=verbose):
+            with (
+                newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
+                timer("separate_vocals", enabled=verbose),
+            ):
                 separate_vocals_from_file(
                     in_path,
                     out_path,
@@ -137,13 +167,22 @@ async def asr(
                 )
 
             with open(out_path, "rb") as f_vocals:
-                with timer("load_audio(vocals)", enabled=verbose):
+                with (
+                    newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
+                    timer("load_audio(vocals)", enabled=verbose),
+                ):
                     audio_np = load_audio(f_vocals, encode=True)
     else:
-        with timer("load_audio(original)", enabled=verbose):
+        with (
+            newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
+            timer("load_audio(original)", enabled=verbose),
+        ):
             audio_np = load_audio(audio_file.file, encode)
 
-    with timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose):
+    with (
+        newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
+        timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
+    ):
         result = asr_model.transcribe(
             audio_np,
             task,
@@ -207,6 +246,7 @@ async def separate_vocals(
     )
 
 
+@newrelic.agent.web_transaction(name="POST /detect-language", group="ASR")
 @app.post("/detect-language", tags=["Endpoints"])
 async def detect_language(
     audio_file: UploadFile = File(...),  # noqa: B008
