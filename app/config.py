@@ -8,8 +8,9 @@ class CONFIG:
     Configuration class for ASR models.
     Reads environment variables for runtime configuration, with sensible defaults.
     """
+
     # Determine the ASR engine ('faster_whisper', 'openai_whisper' or 'whisperx')
-    ASR_ENGINE = os.getenv("ASR_ENGINE", "openai_whisper")
+    ASR_ENGINE = os.getenv("ASR_ENGINE", "faster_whisper")
 
     # Retrieve Huggingface Token
     HF_TOKEN = os.getenv("HF_TOKEN", "")
@@ -49,3 +50,11 @@ class CONFIG:
     # Voice separation options
     VOICE_SEPARATION_MODEL = os.getenv("VOICE_SEPARATION_MODEL", "UVR-MDX-NET-Inst_HQ_4")
     VOICE_SEPARATION_PRECISION = os.getenv("VOICE_SEPARATION_PRECISION", "fp16")
+
+    # How many concurrent inferences to allow inside one process.
+    # (Should usually match faster-whisper's num_workers)
+    ASR_CONCURRENCY = int(os.getenv("ASR_CONCURRENCY", 2))
+
+    # CTranslate2 worker count inside WhisperModel.
+    # Enables real parallelism if multiple threads call transcribe concurrently
+    CT2_NUM_WORKERS = int(os.getenv("CT2_NUM_WORKERS", 2))

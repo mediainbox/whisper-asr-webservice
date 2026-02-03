@@ -1,6 +1,7 @@
 import importlib.metadata
 import io
 import os
+import shutil
 from contextlib import asynccontextmanager
 from os import path
 from pathlib import Path
@@ -82,7 +83,7 @@ async def index():
 
 @newrelic.agent.web_transaction(name="POST /asr", group="ASR")
 @app.post("/asr", tags=["Endpoints"])
-async def asr(
+def asr(
     audio_file: UploadFile = File(...),  # noqa: B008
     encode: bool = Query(default=True, description="Encode audio first through ffmpeg"),
     task: Union[str, None] = Query(default="transcribe", enum=["transcribe", "translate"]),
@@ -151,11 +152,7 @@ async def asr(
     if separate_vocals:
         suffix = Path(filename).suffix or ".wav"
 
-        with (
-            newrelic.agent.FunctionTrace(name="asr.upload_read_all", group="ASR"),
-            timer("upload_read_all", enabled=verbose),
-        ):
-            async_bytes = await audio_file.read()
+        audio_file.file.seek(0)
 
         with TemporaryDirectory() as td:
             td = Path(td)
@@ -163,7 +160,7 @@ async def asr(
             in_path, out_path = td / f"in{suffix}", td / "vocals.wav"
 
             with open(in_path, "wb") as f_in:
-                f_in.write(async_bytes)
+                shutil.copyfileobj(audio_file.file, f_in)
 
             with (
                 newrelic.agent.FunctionTrace(name="asr.total_after_disk", group="ASR"),
@@ -206,6 +203,7 @@ async def asr(
             newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
             timer("load_audio(original)", enabled=verbose),
         ):
+            audio_file.file.seek(0)
             audio_np = load_audio(audio_file.file, encode)
 
         with (
@@ -286,6 +284,7 @@ async def detect_language(
     audio_file: UploadFile = File(...),  # noqa: B008
     encode: bool = Query(default=True, description="Encode audio first through FFmpeg"),
 ):
+    audio_file.file.seek(0)
     detected_lang_code, confidence = asr_model.language_detection(load_audio(audio_file.file, encode))
     return {
         "detected_language": tokenizer.LANGUAGES[detected_lang_code],

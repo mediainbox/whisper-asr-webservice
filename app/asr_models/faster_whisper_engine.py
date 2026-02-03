@@ -1,10 +1,9 @@
 import dataclasses
 import time
 from io import StringIO
-from threading import Thread
+from threading import Thread, Semaphore
 from typing import BinaryIO, Union
 
-import whisper
 from faster_whisper import WhisperModel
 from whisper.utils import ResultWriter, WriteJSON, WriteSRT, WriteTSV, WriteTXT, WriteVTT
 
@@ -18,14 +17,18 @@ def to_whisper_word(word):
 
 
 class FasterWhisperASR(ASRModel):
+    def __init__(self):
+        super().__init__()
+        self._slots = Semaphore(max(1, CONFIG.ASR_CONCURRENCY))
+
     def load_model(self):
         self.model = WhisperModel(
             model_size_or_path=CONFIG.MODEL_NAME,
             device=CONFIG.DEVICE,
             compute_type=CONFIG.MODEL_QUANTIZATION,
             download_root=CONFIG.MODEL_PATH,
+            num_workers=max(1, CONFIG.CT2_NUM_WORKERS),
         )
-
         Thread(target=self.monitor_idleness, daemon=True).start()
 
     def transcribe(
@@ -54,7 +57,7 @@ class FasterWhisperASR(ASRModel):
             options_dict["vad_filter"] = True
         if word_timestamps:
             options_dict["word_timestamps"] = True
-        with self.model_lock:
+        with self._slots:
             segments = []
             text = ""
             segment_generator, info = self.model.transcribe(audio, beam_size=5, **options_dict)
@@ -63,7 +66,7 @@ class FasterWhisperASR(ASRModel):
                 if "words" in seg_dict and seg_dict["words"]:
                     seg_dict["words"] = [to_whisper_word(word) for word in seg_dict["words"]]
                 segments.append(seg_dict)
-                text = text + segment.text
+                text += segment.text
             result = {"language": options_dict.get("language", info.language), "segments": segments, "text": text}
 
         output_file = StringIO()
@@ -79,16 +82,8 @@ class FasterWhisperASR(ASRModel):
             if self.model is None:
                 self.load_model()
 
-        # load audio and pad/trim it to fit 30 seconds
-        audio = whisper.pad_or_trim(audio)
-
-        # detect the spoken language
-        with self.model_lock:
-            segments, info = self.model.transcribe(audio, beam_size=5)
-            detected_lang_code = info.language
-            detected_language_confidence = info.language_probability
-
-        return detected_lang_code, detected_language_confidence
+        segments, info = self.model.transcribe(audio, beam_size=5)
+        return info.language, info.language_probability
 
     def write_result(self, result: dict, file: BinaryIO, output: Union[str, None]):
         options = {"max_line_width": 1000, "max_line_count": 10, "highlight_words": False}
