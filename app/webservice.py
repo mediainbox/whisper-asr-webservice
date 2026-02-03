@@ -146,9 +146,16 @@ async def asr(
     if verbose:
         logger.info("Analyzing file: %s", filename)
 
+    result = None
+
     if separate_vocals:
         suffix = Path(filename).suffix or ".wav"
-        async_bytes = await audio_file.read()
+
+        with (
+            newrelic.agent.FunctionTrace(name="asr.upload_read_all", group="ASR"),
+            timer("upload_read_all", enabled=verbose),
+        ):
+            async_bytes = await audio_file.read()
 
         with TemporaryDirectory() as td:
             td = Path(td)
@@ -159,22 +166,41 @@ async def asr(
                 f_in.write(async_bytes)
 
             with (
-                newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
-                timer("separate_vocals", enabled=verbose),
+                newrelic.agent.FunctionTrace(name="asr.total_after_disk", group="ASR"),
+                timer("total_after_disk", enabled=verbose),
             ):
-                separate_vocals_from_file(
-                    in_path,
-                    out_path,
-                    model_id=CONFIG.VOICE_SEPARATION_MODEL,
-                    precision=CONFIG.VOICE_SEPARATION_PRECISION,
-                )
-
-            with open(out_path, "rb") as f_vocals:
                 with (
-                    newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
-                    timer("load_audio(vocals)", enabled=verbose),
+                    newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
+                    timer("separate_vocals", enabled=verbose),
                 ):
-                    audio_np = load_audio(f_vocals, encode=True)
+                    separate_vocals_from_file(
+                        in_path,
+                        out_path,
+                        model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                        precision=CONFIG.VOICE_SEPARATION_PRECISION,
+                    )
+
+                with open(out_path, "rb") as f_vocals:
+                    with (
+                        newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
+                        timer("load_audio(vocals)", enabled=verbose),
+                    ):
+                        audio_np = load_audio(f_vocals, encode=True)
+
+                with (
+                    newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
+                    timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
+                ):
+                    result = asr_model.transcribe(
+                        audio_np,
+                        task,
+                        language,
+                        initial_prompt,
+                        vad_filter,
+                        word_timestamps,
+                        {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
+                        output,
+                    )
     else:
         with (
             newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
@@ -182,20 +208,25 @@ async def asr(
         ):
             audio_np = load_audio(audio_file.file, encode)
 
-    with (
-        newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
-        timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
-    ):
-        result = asr_model.transcribe(
-            audio_np,
-            task,
-            language,
-            initial_prompt,
-            vad_filter,
-            word_timestamps,
-            {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
-            output,
-        )
+        with (
+            newrelic.agent.FunctionTrace(name="asr.total_after_decode", group="ASR"),
+            timer("total_after_decode", enabled=verbose),
+        ):
+            with (
+                newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
+                timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
+            ):
+                result = asr_model.transcribe(
+                    audio_np,
+                    task,
+                    language,
+                    initial_prompt,
+                    vad_filter,
+                    word_timestamps,
+                    {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
+                    output,
+                )
+
     return StreamingResponse(
         result,
         media_type="text/plain",
