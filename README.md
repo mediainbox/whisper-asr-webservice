@@ -53,6 +53,7 @@ docker run -d -p 9000:9000 \
 - Multiple output formats (text, JSON, VTT, SRT, TSV)
 - Word-level timestamps support
 - Voice activity detection (VAD) filtering
+- Optional voice separation pre-processing (fast-whisper only)
 - Speaker diarization (with WhisperX)
 - FFmpeg integration for broad audio/video format support
 - GPU acceleration support
@@ -68,6 +69,11 @@ Key configuration options:
 - `ASR_MODEL_PATH`: Custom path to store/load models
 - `ASR_DEVICE`: Device selection (cuda, cpu)
 - `MODEL_IDLE_TIMEOUT`: Timeout for model unloading
+- `VOICE_SEP_MODEL_PATH`: Path to voice separation ONNX model used when `separate_vocals=true` (fast-whisper only)
+
+Query parameters (selected):
+
+- `separate_vocals` (bool): If true, preprocess the upload with voice separation and feed the separated vocals to ASR. Only available when `ASR_ENGINE=faster_whisper`.
 
 ## Documentation
 

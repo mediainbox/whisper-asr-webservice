@@ -26,4 +26,4 @@ RUN poetry install --no-cache --extras cpu  --without dev
 
 EXPOSE 9000
 
-ENTRYPOINT ["whisper-asr-webservice"]
+ENTRYPOINT ["newrelic-admin", "run-program", "whisper-asr-webservice"]
