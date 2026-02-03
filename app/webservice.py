@@ -40,7 +40,10 @@ projectMetadata = importlib.metadata.metadata("whisper-asr-webservice")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asr_model.load_model()
-    yield
+    try:
+        yield
+    finally:
+        asr_model.release_model()
 
 
 app = FastAPI(
@@ -137,7 +140,7 @@ async def asr(
             "asr.word_timestamps": bool(word_timestamps),
             "asr.separate_vocals": bool(separate_vocals),
             "asr.output": output or "",
-        }
+        }.items()
     )
 
     if verbose:
