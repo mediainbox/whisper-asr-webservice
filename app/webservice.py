@@ -1,3 +1,4 @@
+import asyncio
 import importlib.metadata
 import io
 import os
@@ -80,7 +81,6 @@ async def index():
     return "/docs"
 
 
-@newrelic.agent.web_transaction(name="POST /asr", group="ASR")
 @app.post("/asr", tags=["Endpoints"])
 async def asr(
     audio_file: UploadFile = File(...),  # noqa: B008
@@ -173,7 +173,8 @@ async def asr(
                     newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
                     timer("separate_vocals", enabled=verbose),
                 ):
-                    separate_vocals_from_file(
+                    await asyncio.to_thread(
+                        separate_vocals_from_file,
                         in_path,
                         out_path,
                         model_id=CONFIG.VOICE_SEPARATION_MODEL,
@@ -185,13 +186,14 @@ async def asr(
                         newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
                         timer("load_audio(vocals)", enabled=verbose),
                     ):
-                        audio_np = load_audio(f_vocals, encode=True)
+                        audio_np = await asyncio.to_thread(load_audio, f_vocals, encode=True)
 
                 with (
                     newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                     timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
                 ):
-                    result = asr_model.transcribe(
+                    result = await asyncio.to_thread(
+                        asr_model.transcribe,
                         audio_np,
                         task,
                         language,
@@ -206,7 +208,7 @@ async def asr(
             newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
             timer("load_audio(original)", enabled=verbose),
         ):
-            audio_np = load_audio(audio_file.file, encode)
+            audio_np = await asyncio.to_thread(load_audio, audio_file.file, encode)
 
         with (
             newrelic.agent.FunctionTrace(name="asr.total_after_decode", group="ASR"),
@@ -216,7 +218,8 @@ async def asr(
                 newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                 timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
             ):
-                result = asr_model.transcribe(
+                result = await asyncio.to_thread(
+                    asr_model.transcribe,
                     audio_np,
                     task,
                     language,
@@ -260,7 +263,8 @@ async def separate_vocals(
             f_in.write(async_bytes)
 
         with timer("separate_vocals", enabled=verbose):
-            separate_vocals_from_file(
+            await asyncio.to_thread(
+                separate_vocals_from_file,
                 in_path,
                 out_path,
                 model_id=CONFIG.VOICE_SEPARATION_MODEL,
@@ -280,13 +284,13 @@ async def separate_vocals(
     )
 
 
-@newrelic.agent.web_transaction(name="POST /detect-language", group="ASR")
 @app.post("/detect-language", tags=["Endpoints"])
 async def detect_language(
     audio_file: UploadFile = File(...),  # noqa: B008
     encode: bool = Query(default=True, description="Encode audio first through FFmpeg"),
 ):
-    detected_lang_code, confidence = asr_model.language_detection(load_audio(audio_file.file, encode))
+    audio_np = await asyncio.to_thread(load_audio, audio_file.file, encode)
+    detected_lang_code, confidence = await asyncio.to_thread(asr_model.language_detection, audio_np)
     return {
         "detected_language": tokenizer.LANGUAGES[detected_lang_code],
         "language_code": detected_lang_code,
