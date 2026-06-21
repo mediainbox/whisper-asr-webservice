@@ -2,12 +2,11 @@ FROM onerahmet/ffmpeg:n7.1 AS ffmpeg
 
 FROM swaggerapi/swagger-ui:v5.9.1 AS swagger-ui
 
-FROM nvidia/cuda:12.6.3-base-ubuntu22.04
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 
 LABEL org.opencontainers.image.source="https://github.com/ahmetoner/whisper-asr-webservice"
 
 ENV PYTHON_VERSION=3.10
-
 ENV POETRY_VENV=/app/.venv
 
 RUN export DEBIAN_FRONTEND=noninteractive \
@@ -15,8 +14,6 @@ RUN export DEBIAN_FRONTEND=noninteractive \
     && apt-get -qq install --no-install-recommends \
     python${PYTHON_VERSION} \
     python${PYTHON_VERSION}-venv \
-    python3-pip \
-    libcudnn8 \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -32,14 +29,24 @@ ENV PATH="${PATH}:${POETRY_VENV}/bin"
 
 WORKDIR /app
 
-COPY . .
+# Copy static assets first — these change rarely so their layers stay cached
+# even when application code changes.
 COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
 COPY --from=swagger-ui /usr/share/nginx/html/swagger-ui.css swagger-ui-assets/swagger-ui.css
 COPY --from=swagger-ui /usr/share/nginx/html/swagger-ui-bundle.js swagger-ui-assets/swagger-ui-bundle.js
 
-RUN poetry config virtualenvs.in-project true
-RUN poetry install --no-cache --extras cuda --without dev
+# Install dependencies in a separate layer so they are not re-installed on
+# every code change — only when pyproject.toml or poetry.lock changes.
+COPY pyproject.toml poetry.lock ./
+RUN poetry config virtualenvs.in-project true \
+    && poetry install --no-cache --extras cuda --without dev
+
+# Copy application code last so dependency layers are reused on code-only changes.
+COPY app/ ./app/
 
 EXPOSE 9000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:9000/docs')" || exit 1
 
 ENTRYPOINT ["newrelic-admin", "run-program", "whisper-asr-webservice"]
