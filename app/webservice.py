@@ -31,9 +31,9 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Limits concurrent GPU operations to 1. Both voice separation and
-# transcription use CUDA; running them simultaneously causes OOM.
-_gpu_semaphore = asyncio.Semaphore(1)
+# Limits concurrent GPU operations. Both voice separation and transcription
+# use CUDA; tune GPU_CONCURRENCY env var based on observed GPU utilization.
+_gpu_semaphore = asyncio.Semaphore(CONFIG.GPU_CONCURRENCY)
 
 asr_model = ASRModelFactory.create_asr_model()
 

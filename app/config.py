@@ -49,3 +49,7 @@ class CONFIG:
     # Voice separation options
     VOICE_SEPARATION_MODEL = os.getenv("VOICE_SEPARATION_MODEL", "UVR-MDX-NET-Inst_HQ_4")
     VOICE_SEPARATION_PRECISION = os.getenv("VOICE_SEPARATION_PRECISION", "fp16")
+
+    # Max concurrent GPU operations. Increase if GPU utilization is consistently
+    # low (e.g. <50%) to allow parallel inference. Keep at 1 if OOM errors appear.
+    GPU_CONCURRENCY = int(os.getenv("GPU_CONCURRENCY", 1))
