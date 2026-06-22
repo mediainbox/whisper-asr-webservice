@@ -31,6 +31,10 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Limits concurrent GPU operations to 1. Both voice separation and
+# transcription use CUDA; running them simultaneously causes OOM.
+_gpu_semaphore = asyncio.Semaphore(1)
+
 asr_model = ASRModelFactory.create_asr_model()
 
 LANGUAGE_CODES = sorted(tokenizer.LANGUAGES.keys())
@@ -173,13 +177,14 @@ async def asr(
                     newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
                     timer("separate_vocals", enabled=verbose),
                 ):
-                    await asyncio.to_thread(
-                        separate_vocals_from_file,
-                        in_path,
-                        out_path,
-                        model_id=CONFIG.VOICE_SEPARATION_MODEL,
-                        precision=CONFIG.VOICE_SEPARATION_PRECISION,
-                    )
+                    async with _gpu_semaphore:
+                        await asyncio.to_thread(
+                            separate_vocals_from_file,
+                            in_path,
+                            out_path,
+                            model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                            precision=CONFIG.VOICE_SEPARATION_PRECISION,
+                        )
 
                 with open(out_path, "rb") as f_vocals:
                     with (
@@ -192,17 +197,18 @@ async def asr(
                     newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                     timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
                 ):
-                    result = await asyncio.to_thread(
-                        asr_model.transcribe,
-                        audio_np,
-                        task,
-                        language,
-                        initial_prompt,
-                        vad_filter,
-                        word_timestamps,
-                        {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
-                        output,
-                    )
+                    async with _gpu_semaphore:
+                        result = await asyncio.to_thread(
+                            asr_model.transcribe,
+                            audio_np,
+                            task,
+                            language,
+                            initial_prompt,
+                            vad_filter,
+                            word_timestamps,
+                            {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
+                            output,
+                        )
     else:
         with (
             newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
@@ -218,17 +224,18 @@ async def asr(
                 newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                 timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
             ):
-                result = await asyncio.to_thread(
-                    asr_model.transcribe,
-                    audio_np,
-                    task,
-                    language,
-                    initial_prompt,
-                    vad_filter,
-                    word_timestamps,
-                    {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
-                    output,
-                )
+                async with _gpu_semaphore:
+                    result = await asyncio.to_thread(
+                        asr_model.transcribe,
+                        audio_np,
+                        task,
+                        language,
+                        initial_prompt,
+                        vad_filter,
+                        word_timestamps,
+                        {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
+                        output,
+                    )
 
     return StreamingResponse(
         result,
