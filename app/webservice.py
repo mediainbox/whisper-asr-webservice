@@ -31,9 +31,12 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Limits concurrent GPU operations. Both voice separation and transcription
-# use CUDA; tune GPU_CONCURRENCY env var based on observed GPU utilization.
-_gpu_semaphore = asyncio.Semaphore(CONFIG.GPU_CONCURRENCY)
+# Separate semaphores allow independent tuning of each GPU phase.
+# Vocal separation (UVR-MDX-NET) is heavier; transcription (faster-whisper) is lighter
+# and can run at higher concurrency without exhausting VRAM.
+# Both default to GPU_CONCURRENCY for backwards compatibility.
+_vocals_semaphore    = asyncio.Semaphore(CONFIG.VOCALS_CONCURRENCY)
+_transcribe_semaphore = asyncio.Semaphore(CONFIG.TRANSCRIBE_CONCURRENCY)
 
 asr_model = ASRModelFactory.create_asr_model()
 
@@ -183,8 +186,8 @@ async def asr(
                         in_path,
                         model_id=CONFIG.VOICE_SEPARATION_MODEL,
                     )
-                    # GPU phase: inference — acquire semaphore only for this part
-                    async with _gpu_semaphore:
+                    # GPU phase: vocal separation inference
+                    async with _vocals_semaphore:
                         await asyncio.to_thread(
                             run_separation_gpu,
                             audio_raw,
@@ -206,7 +209,7 @@ async def asr(
                     newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                     timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
                 ):
-                    async with _gpu_semaphore:
+                    async with _transcribe_semaphore:
                         result = await asyncio.to_thread(
                             asr_model.transcribe,
                             audio_np,
@@ -233,7 +236,7 @@ async def asr(
                 newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                 timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
             ):
-                async with _gpu_semaphore:
+                async with _transcribe_semaphore:
                     result = await asyncio.to_thread(
                         asr_model.transcribe,
                         audio_np,

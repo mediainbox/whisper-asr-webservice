@@ -50,6 +50,14 @@ class CONFIG:
     VOICE_SEPARATION_MODEL = os.getenv("VOICE_SEPARATION_MODEL", "UVR-MDX-NET-Inst_HQ_4")
     VOICE_SEPARATION_PRECISION = os.getenv("VOICE_SEPARATION_PRECISION", "fp16")
 
-    # Max concurrent GPU operations. Increase if GPU utilization is consistently
-    # low (e.g. <50%) to allow parallel inference. Keep at 1 if OOM errors appear.
+    # Max concurrent GPU operations (legacy fallback — sets both semaphores if the
+    # specific vars below are not set). Keep at 1 if OOM errors appear.
     GPU_CONCURRENCY = int(os.getenv("GPU_CONCURRENCY", 1))
+
+    # Concurrent vocal separation operations. UVR-MDX-NET is heavier than transcription;
+    # lower this if VRAM is tight. Defaults to GPU_CONCURRENCY for backwards compat.
+    VOCALS_CONCURRENCY = int(os.getenv("VOCALS_CONCURRENCY", os.getenv("GPU_CONCURRENCY", 1)))
+
+    # Concurrent transcription operations. faster-whisper is lighter than vocal separation;
+    # can be set higher than VOCALS_CONCURRENCY to improve pipeline throughput.
+    TRANSCRIBE_CONCURRENCY = int(os.getenv("TRANSCRIBE_CONCURRENCY", os.getenv("GPU_CONCURRENCY", 1)))
