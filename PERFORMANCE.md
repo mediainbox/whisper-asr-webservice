@@ -204,6 +204,10 @@ Ambas variables defaultean a `GPU_CONCURRENCY` — backwards compatible.
 
 **Conclusión:** La mejora más significativa de todas. El pipeline ahora puede tener hasta 8 transcripciones corriendo en paralelo mientras solo 4 vocal separations ocupan GPU — eliminando el cuello de botella que serializaba innecesariamente la fase más liviana.
 
+### Tuning adicional: VOCALS_CONCURRENCY=6
+
+Subir de 4 a 6 no produjo mejora (61s → 61s). El cuello de botella ya no es la cantidad de slots sino el tiempo de inferencia de UVR-MDX-NET en la GPU física. Más workers no ayudan cuando todos compiten por el mismo hardware. **Valor óptimo: `VOCALS_CONCURRENCY=4`.**
+
 ---
 
 ## Resumen de mejoras acumuladas
