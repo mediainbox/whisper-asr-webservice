@@ -88,6 +88,14 @@ async def index():
     return "/docs"
 
 
+@app.get("/health", tags=["Health"], include_in_schema=False)
+async def health():
+    if asr_model.model is None:
+        from fastapi import Response
+        return Response(status_code=503, content="Model not loaded")
+    return {"status": "ok"}
+
+
 @app.post("/asr", tags=["Endpoints"])
 async def asr(
     audio_file: UploadFile = File(...),  # noqa: B008
