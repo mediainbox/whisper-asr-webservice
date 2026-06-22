@@ -60,17 +60,18 @@ class FasterWhisperASR(ASRModel):
             options_dict["vad_filter"] = True
         if word_timestamps:
             options_dict["word_timestamps"] = True
-        with self.model_lock:
-            segments = []
-            text = ""
-            segment_generator, info = self.model.transcribe(audio, beam_size=5, **options_dict)
-            for segment in segment_generator:
-                seg_dict = dataclasses.asdict(segment)
-                if "words" in seg_dict and seg_dict["words"]:
-                    seg_dict["words"] = [to_whisper_word(word) for word in seg_dict["words"]]
-                segments.append(seg_dict)
-                text = text + segment.text
-            result = {"language": options_dict.get("language", info.language), "segments": segments, "text": text}
+        # CTranslate2 is thread-safe — concurrent inference is supported natively.
+        # model_lock is only needed for the load/unload check above, not for inference.
+        segments = []
+        text = ""
+        segment_generator, info = self.model.transcribe(audio, beam_size=5, **options_dict)
+        for segment in segment_generator:
+            seg_dict = dataclasses.asdict(segment)
+            if "words" in seg_dict and seg_dict["words"]:
+                seg_dict["words"] = [to_whisper_word(word) for word in seg_dict["words"]]
+            segments.append(seg_dict)
+            text = text + segment.text
+        result = {"language": options_dict.get("language", info.language), "segments": segments, "text": text}
 
         output_file = StringIO()
         self.write_result(result, output_file, output)
@@ -89,10 +90,9 @@ class FasterWhisperASR(ASRModel):
         audio = whisper.pad_or_trim(audio)
 
         # detect the spoken language
-        with self.model_lock:
-            segments, info = self.model.transcribe(audio, beam_size=5)
-            detected_lang_code = info.language
-            detected_language_confidence = info.language_probability
+        segments, info = self.model.transcribe(audio, beam_size=5)
+        detected_lang_code = info.language
+        detected_language_confidence = info.language_probability
 
         return detected_lang_code, detected_language_confidence
 
