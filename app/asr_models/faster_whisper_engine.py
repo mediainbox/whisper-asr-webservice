@@ -4,6 +4,7 @@ from io import StringIO
 from threading import Thread
 from typing import BinaryIO, Union
 
+import numpy as np
 import whisper
 from faster_whisper import WhisperModel
 from whisper.utils import ResultWriter, WriteJSON, WriteSRT, WriteTSV, WriteTXT, WriteVTT
@@ -25,6 +26,11 @@ class FasterWhisperASR(ASRModel):
             compute_type=CONFIG.MODEL_QUANTIZATION,
             download_root=CONFIG.MODEL_PATH,
         )
+
+        # CTranslate2 loads weights to GPU lazily on first inference.
+        # Run a warmup pass so weights are in VRAM before /health returns 200.
+        dummy = np.zeros(CONFIG.SAMPLE_RATE, dtype=np.float32)
+        list(self.model.transcribe(dummy, beam_size=1)[0])
 
         Thread(target=self.monitor_idleness, daemon=True).start()
 
