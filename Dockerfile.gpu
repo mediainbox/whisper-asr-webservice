@@ -2,7 +2,7 @@ FROM onerahmet/ffmpeg:n7.1 AS ffmpeg
 
 FROM swaggerapi/swagger-ui:v5.9.1 AS swagger-ui
 
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.6.3-base-ubuntu22.04
 
 LABEL org.opencontainers.image.source="https://github.com/ahmetoner/whisper-asr-webservice"
 
@@ -15,6 +15,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
     python${PYTHON_VERSION} \
     python${PYTHON_VERSION}-venv \
     python3-pip \
+    libcudnn8 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ln -s -f /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 && \
