@@ -2,6 +2,7 @@ import asyncio
 import importlib.metadata
 import io
 import os
+import time
 from contextlib import asynccontextmanager
 from os import path
 from pathlib import Path
@@ -37,6 +38,10 @@ logger = logging.getLogger(__name__)
 # Both default to GPU_CONCURRENCY for backwards compatibility.
 _vocals_semaphore    = asyncio.Semaphore(CONFIG.VOCALS_CONCURRENCY)
 _transcribe_semaphore = asyncio.Semaphore(CONFIG.TRANSCRIBE_CONCURRENCY)
+
+_start_time = time.time()
+_requests_total = 0
+_requests_active = 0
 
 asr_model = ASRModelFactory.create_asr_model()
 
@@ -98,7 +103,33 @@ async def health():
 
 @app.get("/stats", tags=["Health"], include_in_schema=False)
 async def stats():
+    import torch
+    gpu = []
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            gpu.append({
+                "index": i,
+                "name": props.name,
+                "memory_allocated_mib": round(torch.cuda.memory_allocated(i) / 1024 ** 2),
+                "memory_reserved_mib": round(torch.cuda.memory_reserved(i) / 1024 ** 2),
+                "memory_total_mib": round(props.total_memory / 1024 ** 2),
+            })
+
     return {
+        "uptime_seconds": round(time.time() - _start_time),
+        "requests": {
+            "total": _requests_total,
+            "active": _requests_active,
+        },
+        "model": {
+            "engine": CONFIG.ASR_ENGINE,
+            "name": CONFIG.MODEL_NAME,
+            "device": CONFIG.DEVICE,
+            "quantization": CONFIG.MODEL_QUANTIZATION,
+            "loaded": asr_model.model is not None,
+            "idle_seconds": round(time.time() - asr_model.last_activity_time),
+        },
         "transcribe": {
             "concurrency": CONFIG.TRANSCRIBE_CONCURRENCY,
             "slots_used": CONFIG.TRANSCRIBE_CONCURRENCY - _transcribe_semaphore._value,
@@ -109,6 +140,7 @@ async def stats():
             "slots_used": CONFIG.VOCALS_CONCURRENCY - _vocals_semaphore._value,
             "slots_free": _vocals_semaphore._value,
         },
+        "gpu": gpu,
     }
 
 
@@ -173,6 +205,10 @@ async def asr(
             "asr.output": output or "",
         }.items()
     )
+
+    global _requests_total, _requests_active
+    _requests_total += 1
+    _requests_active += 1
 
     if verbose:
         logger.info("Analyzing file: %s", filename)
@@ -272,6 +308,8 @@ async def asr(
                         {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
                         output,
                     )
+
+    _requests_active -= 1
 
     return StreamingResponse(
         result,
