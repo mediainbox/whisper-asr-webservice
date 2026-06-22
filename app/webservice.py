@@ -96,6 +96,22 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/stats", tags=["Health"], include_in_schema=False)
+async def stats():
+    return {
+        "transcribe": {
+            "concurrency": CONFIG.TRANSCRIBE_CONCURRENCY,
+            "slots_used": CONFIG.TRANSCRIBE_CONCURRENCY - _transcribe_semaphore._value,
+            "slots_free": _transcribe_semaphore._value,
+        },
+        "vocals": {
+            "concurrency": CONFIG.VOCALS_CONCURRENCY,
+            "slots_used": CONFIG.VOCALS_CONCURRENCY - _vocals_semaphore._value,
+            "slots_free": _vocals_semaphore._value,
+        },
+    }
+
+
 @app.post("/asr", tags=["Endpoints"])
 async def asr(
     audio_file: UploadFile = File(...),  # noqa: B008
