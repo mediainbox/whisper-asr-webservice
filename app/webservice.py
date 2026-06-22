@@ -282,13 +282,14 @@ async def separate_vocals(
             f_in.write(async_bytes)
 
         with timer("separate_vocals", enabled=verbose):
-            await asyncio.to_thread(
-                separate_vocals_from_file,
-                in_path,
-                out_path,
-                model_id=CONFIG.VOICE_SEPARATION_MODEL,
-                precision=CONFIG.VOICE_SEPARATION_PRECISION,
-            )
+            async with _vocals_semaphore:
+                await asyncio.to_thread(
+                    separate_vocals_from_file,
+                    in_path,
+                    out_path,
+                    model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                    precision=CONFIG.VOICE_SEPARATION_PRECISION,
+                )
 
         with open(out_path, "rb") as f_vocals:
             data = f_vocals.read()
