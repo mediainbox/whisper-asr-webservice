@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import librosa
+import ffmpeg
 import numpy as np
 import soundfile
 import torch
@@ -239,6 +239,19 @@ def separate_vocals_from_array(
     )
 
 
+def _decode_audio(input_path: str | Path, sample_rate: int) -> np.ndarray:
+    """Decode any audio format to stereo float32 via ffmpeg, avoiding soundfile/audioread limits."""
+    try:
+        out, _ = (
+            ffmpeg.input(str(input_path), threads=0)
+            .output("-", format="f32le", ac=2, ar=sample_rate)
+            .run(cmd="ffmpeg", capture_stdout=True, capture_stderr=True)
+        )
+    except ffmpeg.Error as e:
+        raise RuntimeError(f"Failed to decode audio for separation: {e.stderr.decode()}") from e
+    return np.frombuffer(out, dtype=np.float32).reshape(-1, 2).T
+
+
 def load_audio_for_separation(
     input_path: str | Path,
     model_id: str = "UVR-MDX-NET-Inst_HQ_4",
@@ -252,7 +265,7 @@ def load_audio_for_separation(
     """
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
     model, cfg = get_model_and_config(model_id=model_id, repo_id=repo_id, device=device)
-    audio, _ = librosa.load(str(input_path), sr=cfg.sample_rate, mono=False)
+    audio = _decode_audio(input_path, cfg.sample_rate)
     return audio, cfg, model, device
 
 
