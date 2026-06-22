@@ -18,7 +18,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from whisper import tokenizer
 from tempfile import TemporaryDirectory
-from app.voice_separation import separate_vocals_from_file
+from app.voice_separation import load_audio_for_separation, run_separation_gpu, separate_vocals_from_file
 
 from app.config import CONFIG
 from app.factory.asr_model_factory import ASRModelFactory
@@ -177,12 +177,21 @@ async def asr(
                     newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
                     timer("separate_vocals", enabled=verbose),
                 ):
+                    # CPU phase: decode audio and fetch cached model — no GPU needed
+                    audio_raw, vs_cfg, vs_model, vs_device = await asyncio.to_thread(
+                        load_audio_for_separation,
+                        in_path,
+                        model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                    )
+                    # GPU phase: inference — acquire semaphore only for this part
                     async with _gpu_semaphore:
                         await asyncio.to_thread(
-                            separate_vocals_from_file,
-                            in_path,
+                            run_separation_gpu,
+                            audio_raw,
+                            vs_cfg,
+                            vs_model,
+                            vs_device,
                             out_path,
-                            model_id=CONFIG.VOICE_SEPARATION_MODEL,
                             precision=CONFIG.VOICE_SEPARATION_PRECISION,
                         )
 

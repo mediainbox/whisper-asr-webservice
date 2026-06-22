@@ -239,32 +239,37 @@ def separate_vocals_from_array(
     )
 
 
-def separate_vocals_from_file(
+def load_audio_for_separation(
     input_path: str | Path,
-    output_path: str | Path,
     model_id: str = "UVR-MDX-NET-Inst_HQ_4",
     repo_id: str = "mediainbox/uvr-mdx-models",
     device: str | None = None,
+) -> tuple[np.ndarray, "VocalSeparationConfig", torch.jit.ScriptModule, str]:
+    """
+    CPU-only phase: decode audio and warm up the cached model handle.
+    Call this before acquiring the GPU semaphore.
+    Returns (audio, cfg, model, device) ready for run_separation_gpu.
+    """
+    device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
+    model, cfg = get_model_and_config(model_id=model_id, repo_id=repo_id, device=device)
+    audio, _ = librosa.load(str(input_path), sr=cfg.sample_rate, mono=False)
+    return audio, cfg, model, device
+
+
+def run_separation_gpu(
+    audio: np.ndarray,
+    cfg: "VocalSeparationConfig",
+    model: torch.jit.ScriptModule,
+    device: str,
+    output_path: str | Path,
     chunks: int = 30,
     use_tta: bool = False,
     precision: str = "fp16",
 ) -> None:
-    device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
-
-    input_path = str(input_path)
-    output_path = str(output_path)
-
-    # 1. Load model and config
-    model, cfg = get_model_and_config(
-        model_id=model_id,
-        repo_id=repo_id,
-        device=device,
-    )
-
-    # 2. Read audio accordingly
-    audio, _ = librosa.load(input_path, sr=cfg.sample_rate, mono=False)
-
-    # 3. Run model
+    """
+    GPU phase: run model inference and write output.
+    Call this while holding the GPU semaphore.
+    """
     target_est = separate_vocal(
         model=model,
         input_audio=audio,
@@ -278,13 +283,26 @@ def separate_vocals_from_file(
         precision=precision,
     )
 
-    # 4. Convert to vocals if the model predicts instrumental
     audio_vocals = audio - target_est if cfg.outputs_instrumental() else target_est
 
-    # 5. Avoid clipping after subtraction
     peak = np.max(np.abs(audio_vocals))
     if np.isfinite(peak) and peak > 1.0:
         audio_vocals = audio_vocals / peak
 
-    # 6. Save vocals
-    soundfile.write(output_path, audio_vocals.T, samplerate=cfg.sample_rate)
+    soundfile.write(str(output_path), audio_vocals.T, samplerate=cfg.sample_rate)
+
+
+def separate_vocals_from_file(
+    input_path: str | Path,
+    output_path: str | Path,
+    model_id: str = "UVR-MDX-NET-Inst_HQ_4",
+    repo_id: str = "mediainbox/uvr-mdx-models",
+    device: str | None = None,
+    chunks: int = 30,
+    use_tta: bool = False,
+    precision: str = "fp16",
+) -> None:
+    audio, cfg, model, device = load_audio_for_separation(
+        input_path, model_id=model_id, repo_id=repo_id, device=device
+    )
+    run_separation_gpu(audio, cfg, model, device, output_path, chunks, use_tta, precision)
