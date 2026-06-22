@@ -39,10 +39,11 @@ COPY --from=swagger-ui /usr/share/nginx/html/swagger-ui-bundle.js swagger-ui-ass
 # every code change — only when pyproject.toml or poetry.lock changes.
 COPY pyproject.toml poetry.lock README.md ./
 RUN poetry config virtualenvs.in-project true \
-    && poetry install --no-cache --extras cuda --without dev
+    && poetry install --no-cache --extras cuda --without dev --no-root
 
 # Copy application code last so dependency layers are reused on code-only changes.
 COPY app/ ./app/
+RUN poetry install --no-cache --extras cuda --without dev
 
 EXPOSE 9000
 
