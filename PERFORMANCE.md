@@ -210,6 +210,45 @@ Subir de 4 a 6 no produjo mejora (61s → 61s). El cuello de botella ya no es la
 
 ---
 
+## 9. Bug crítico: model_lock serializaba todas las transcripciones
+
+**Problema identificado:**  
+A pesar de tener `TRANSCRIBE_CONCURRENCY=8` y el semáforo correspondiente, todas las transcripciones corrían **de a una a la vez**. El promedio NR de 1.1 minuto para `asr.transcribe` era casi todo tiempo de cola — no inferencia.
+
+**Causa raíz:**  
+En `faster_whisper_engine.py`, toda la inferencia estaba envuelta en `model_lock` (un `threading.Lock`):
+
+```python
+with self.model_lock:                          # ← BLOQUEABA TODO
+    segment_generator, info = self.model.transcribe(...)
+    for segment in segment_generator:
+        ...
+```
+
+Un `threading.Lock` no permite reentrancia entre threads. Con TRANSCRIBE_CONCURRENCY=8, los 8 threads esperaban el semáforo async, pero luego el lock los serializaba a 1. Efectivamente, la concurrencia real era siempre 1 sin importar el valor configurado.
+
+**Por qué el lock era innecesario:**  
+CTranslate2 (el backend de faster-whisper) es **thread-safe por diseño** y soporta inferencia concurrente nativa. El `model_lock` sólo es necesario para el check de `model is None` durante carga/descarga.
+
+**Cambio aplicado:**  
+Se removió `model_lock` del bloque de inferencia. El lock queda sólo en el check de carga:
+
+```python
+with self.model_lock:           # sólo para load check
+    if self.model is None:
+        self.load_model()
+
+# inferencia concurrente — thread-safe en CTranslate2
+segment_generator, info = self.model.transcribe(audio, ...)
+for segment in segment_generator:
+    ...
+```
+
+**Resultado esperado:**  
+TRANSCRIBE_CONCURRENCY=8 ahora ejecuta **8 transcripciones reales en paralelo**. La cola de 1.1 minuto en NR debería colapsar a segundos.
+
+---
+
 ## Resumen de mejoras acumuladas
 
 | Versión | Cambio | Wall time (100 req) | Éxito |
@@ -219,6 +258,7 @@ Subir de 4 a 6 no produjo mejora (61s → 61s). El cuello de botella ya no es la
 | v2.0 + HAProxy fix | maxconn 100, leastconn | 148s | **100/100** |
 | v2.3.0 | GPU_CONCURRENCY=6 | 148s | 100/100 |
 | v2.4.0 | Semáforos separados vocals/transcribe | **61s** | **100/100** |
+| v2.4.4 | Removido model_lock de inferencia (CTranslate2 thread-safe) | TBD | TBD |
 
 *60% de requests fallaban por HAProxy maxconn=30.
 
