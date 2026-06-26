@@ -129,7 +129,12 @@ def load_audio(file: BinaryIO, encode=True, sr: int = CONFIG.SAMPLE_RATE):
     else:
         out = file.read()
 
-    return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
+    # frombuffer is a 1-D view (no copy); astype makes the single float32 copy we keep,
+    # then normalize in place. Avoids the extra flatten() copy and the division temporary —
+    # peak transient RAM per decode drops from ~6x to ~3x the PCM size.
+    audio = np.frombuffer(out, np.int16).astype(np.float32)
+    audio /= 32768.0
+    return audio
 
 
 @contextmanager
