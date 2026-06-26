@@ -4,6 +4,30 @@ Changelog
 Unreleased
 ----------
 
+[2.4.0] (2026-06-26)
+--------------------
+
+### Fixed
+
+- Host-RAM OOM under concurrent load: audio decode now runs under a dedicated
+  `DECODE_CONCURRENCY` semaphore (default 2), so concurrent uploads no longer
+  decode an unbounded number of full clips into RAM ahead of the GPU semaphores.
+
+### Changed
+
+- `load_audio` converts decoded PCM with an in-place normalization and without the
+  redundant `flatten()` copy, cutting peak transient RAM per decode from ~6x to ~3x
+  the PCM size.
+
+### Added
+
+- `DECODE_CONCURRENCY` env var (falls back to `GPU_CONCURRENCY`) to cap concurrent
+  audio decodes independently of GPU inference.
+- `/stats` now reports the `decode` semaphore slots, host `os` metrics (CPU count,
+  load average, memory + swap, process RSS/VmSize, from `/proc` + stdlib), and
+  richer per-GPU info (real device free/used memory via `mem_get_info`, plus
+  best-effort utilization and temperature).
+
 [1.9.1] (2025-07-01)
 --------------------
 
