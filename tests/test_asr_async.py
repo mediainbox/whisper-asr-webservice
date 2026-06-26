@@ -4,6 +4,7 @@ and do not block the async event loop.
 """
 import asyncio
 import io
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -124,6 +125,47 @@ def test_asr_response_contains_transcription(client):
 # ---------------------------------------------------------------------------
 # Behavior: /detect-language returns language and confidence
 # ---------------------------------------------------------------------------
+
+
+def test_decode_concurrency_is_bounded(client):
+    """Concurrent /asr uploads must not decode more clips at once than DECODE_CONCURRENCY,
+    even though transcription is serialized by a separate (smaller) semaphore. This is the
+    host-RAM guard: without it, N concurrent decodes hold N full audio arrays in RAM."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    c, model = client
+    model.transcribe.return_value = io.StringIO("hello world")
+
+    import app.webservice as ws
+    limit = ws._decode_semaphore._value  # initial = CONFIG.DECODE_CONCURRENCY
+
+    lock = threading.Lock()
+    state = {"now": 0, "max": 0}
+
+    def blocking_load_audio(*_args, **_kwargs):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        time.sleep(0.1)  # hold the decode slot so overlap is observable
+        with lock:
+            state["now"] -= 1
+        return FAKE_AUDIO_NP
+
+    def fire():
+        return c.post(
+            "/asr",
+            files={"audio_file": ("audio.wav", io.BytesIO(FAKE_AUDIO), "audio/wav")},
+        )
+
+    with patch("app.webservice.load_audio", side_effect=blocking_load_audio):
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = [f.result() for f in [pool.submit(fire) for _ in range(8)]]
+
+    assert all(r.status_code == 200 for r in results)
+    assert state["max"] <= limit, f"decode concurrency {state['max']} exceeded cap {limit}"
+    if limit > 1:
+        assert state["max"] > 1, "decode never ran in parallel; cap is not just serializing"
 
 
 def test_detect_language_returns_language_and_confidence(client):

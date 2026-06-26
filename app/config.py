@@ -61,3 +61,11 @@ class CONFIG:
     # Concurrent transcription operations. faster-whisper is lighter than vocal separation;
     # can be set higher than VOCALS_CONCURRENCY to improve pipeline throughput.
     TRANSCRIBE_CONCURRENCY = int(os.getenv("TRANSCRIBE_CONCURRENCY", os.getenv("GPU_CONCURRENCY", 1)))
+
+    # Concurrent audio decode/preprocess operations. This is CPU + host-RAM bound, NOT GPU,
+    # and it is what drives host-RAM OOMs: each decode holds the whole clip as a float32
+    # numpy array (~230 MB per hour of audio), plus transient copies during conversion.
+    # It must be capped independently of the GPU semaphores — otherwise N concurrent uploads
+    # decode N full clips into RAM at once even when TRANSCRIBE_CONCURRENCY is 1.
+    # ponytail: fixed cap on concurrent decodes; raise per available host RAM, not per GPU.
+    DECODE_CONCURRENCY = int(os.getenv("DECODE_CONCURRENCY", os.getenv("GPU_CONCURRENCY", 2)))
