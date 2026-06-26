@@ -4,8 +4,10 @@ Changelog
 Unreleased
 ----------
 
-[2.4.0] (2026-06-26)
+[2.5.0] (2026-06-26)
 --------------------
+
+> Released as 2.5.0 (not 2.4.x) to stay ahead of the existing `v2.4.5` container tag in the registry.
 
 ### Fixed
 
