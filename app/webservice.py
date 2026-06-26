@@ -104,6 +104,48 @@ async def health():
     return {"status": "ok"}
 
 
+def _os_metrics():
+    """Best-effort host/process metrics. Linux /proc + stdlib only; returns whatever is
+    available (so it degrades to load_avg-only on non-Linux dev machines). These surface
+    the host-RAM OOM signals directly: memory.available_mib, swap, and process.rss_mib."""
+    m = {}
+    try:
+        m["cpu_count"] = os.cpu_count()
+        m["load_avg"] = [round(x, 2) for x in os.getloadavg()]
+    except (OSError, AttributeError):
+        pass
+    try:
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                info[key] = int(rest.split()[0])  # values in kB
+        total = info["MemTotal"]
+        available = info.get("MemAvailable", info.get("MemFree", 0))
+        m["memory"] = {
+            "total_mib": round(total / 1024),
+            "available_mib": round(available / 1024),
+            "used_mib": round((total - available) / 1024),
+            "percent_used": round(100 * (total - available) / total, 1) if total else None,
+            "swap_total_mib": round(info.get("SwapTotal", 0) / 1024),
+            "swap_free_mib": round(info.get("SwapFree", 0) / 1024),
+        }
+    except (OSError, KeyError, ValueError):
+        pass
+    try:
+        proc = {}
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith(("VmRSS:", "VmSize:")):
+                    key, _, rest = line.partition(":")
+                    proc[key] = round(int(rest.split()[0]) / 1024)  # kB -> MiB
+        if proc:
+            m["process"] = {"rss_mib": proc.get("VmRSS"), "vm_mib": proc.get("VmSize")}
+    except (OSError, ValueError):
+        pass
+    return m
+
+
 @app.get("/stats", tags=["Health"], include_in_schema=False)
 async def stats():
     import torch
@@ -111,13 +153,30 @@ async def stats():
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
             props = torch.cuda.get_device_properties(i)
-            gpu.append({
+            entry = {
                 "index": i,
                 "name": props.name,
                 "memory_allocated_mib": round(torch.cuda.memory_allocated(i) / 1024 ** 2),
                 "memory_reserved_mib": round(torch.cuda.memory_reserved(i) / 1024 ** 2),
                 "memory_total_mib": round(props.total_memory / 1024 ** 2),
-            })
+            }
+            # Actual device memory (not just torch's caching allocator view) + util/temp.
+            # ponytail: best-effort — util/temp need pynvml under the hood and may be absent.
+            try:
+                free, total = torch.cuda.mem_get_info(i)
+                entry["memory_free_mib"] = round(free / 1024 ** 2)
+                entry["memory_used_mib"] = round((total - free) / 1024 ** 2)
+            except Exception:
+                pass
+            try:
+                entry["utilization_percent"] = torch.cuda.utilization(i)
+            except Exception:
+                pass
+            try:
+                entry["temperature_c"] = torch.cuda.temperature(i)
+            except Exception:
+                pass
+            gpu.append(entry)
 
     return {
         "uptime_seconds": round(time.time() - _start_time),
@@ -133,6 +192,11 @@ async def stats():
             "loaded": asr_model.model is not None,
             "idle_seconds": round(time.time() - asr_model.last_activity_time),
         },
+        "decode": {
+            "concurrency": CONFIG.DECODE_CONCURRENCY,
+            "slots_used": CONFIG.DECODE_CONCURRENCY - _decode_semaphore._value,
+            "slots_free": _decode_semaphore._value,
+        },
         "transcribe": {
             "concurrency": CONFIG.TRANSCRIBE_CONCURRENCY,
             "slots_used": CONFIG.TRANSCRIBE_CONCURRENCY - _transcribe_semaphore._value,
@@ -143,6 +207,7 @@ async def stats():
             "slots_used": CONFIG.VOCALS_CONCURRENCY - _vocals_semaphore._value,
             "slots_free": _vocals_semaphore._value,
         },
+        "os": _os_metrics(),
         "gpu": gpu,
     }
 
