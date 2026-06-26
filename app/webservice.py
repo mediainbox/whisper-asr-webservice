@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 # Both default to GPU_CONCURRENCY for backwards compatibility.
 _vocals_semaphore    = asyncio.Semaphore(CONFIG.VOCALS_CONCURRENCY)
 _transcribe_semaphore = asyncio.Semaphore(CONFIG.TRANSCRIBE_CONCURRENCY)
+# Caps host-RAM use: decode holds the full clip as a float32 array (~230 MB/hour).
+# Without this gate, concurrent uploads decode all clips into RAM at once and OOM the host.
+_decode_semaphore    = asyncio.Semaphore(CONFIG.DECODE_CONCURRENCY)
 
 _start_time = time.time()
 _requests_total = 0
@@ -240,12 +243,14 @@ async def asr(
                     newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
                     timer("separate_vocals", enabled=verbose),
                 ):
-                    # CPU phase: decode audio and fetch cached model — no GPU needed
-                    audio_raw, vs_cfg, vs_model, vs_device = await asyncio.to_thread(
-                        load_audio_for_separation,
-                        in_path,
-                        model_id=CONFIG.VOICE_SEPARATION_MODEL,
-                    )
+                    # CPU phase: decode audio and fetch cached model — no GPU needed.
+                    # Decode is the RAM-heavy step, so it goes under the decode gate.
+                    async with _decode_semaphore:
+                        audio_raw, vs_cfg, vs_model, vs_device = await asyncio.to_thread(
+                            load_audio_for_separation,
+                            in_path,
+                            model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                        )
                     # GPU phase: vocal separation inference
                     async with _vocals_semaphore:
                         await asyncio.to_thread(
@@ -263,7 +268,8 @@ async def asr(
                         newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
                         timer("load_audio(vocals)", enabled=verbose),
                     ):
-                        audio_np = await asyncio.to_thread(load_audio, f_vocals, encode=True)
+                        async with _decode_semaphore:
+                            audio_np = await asyncio.to_thread(load_audio, f_vocals, encode=True)
 
                 with (
                     newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
@@ -286,7 +292,8 @@ async def asr(
             newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
             timer("load_audio(original)", enabled=verbose),
         ):
-            audio_np = await asyncio.to_thread(load_audio, audio_file.file, encode)
+            async with _decode_semaphore:
+                audio_np = await asyncio.to_thread(load_audio, audio_file.file, encode)
 
         with (
             newrelic.agent.FunctionTrace(name="asr.total_after_decode", group="ASR"),
