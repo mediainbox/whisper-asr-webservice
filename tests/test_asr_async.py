@@ -168,6 +168,29 @@ def test_decode_concurrency_is_bounded(client):
         assert state["max"] > 1, "decode never ran in parallel; cap is not just serializing"
 
 
+def test_stats_exposes_decode_os_and_gpu(client):
+    """/stats must expose the decode semaphore block, OS metrics, and a gpu list."""
+    from app.config import CONFIG
+
+    c, _ = client
+    response = c.get("/stats")
+
+    assert response.status_code == 200
+    body = response.json()
+
+    # decode block mirrors transcribe/vocals and reflects the dedicated semaphore
+    assert body["decode"]["concurrency"] == CONFIG.DECODE_CONCURRENCY
+    assert body["decode"]["slots_used"] == 0  # idle: nothing decoding
+    assert body["decode"]["slots_free"] == CONFIG.DECODE_CONCURRENCY
+
+    # OS metrics present and best-effort (load_avg works cross-platform)
+    assert isinstance(body["os"], dict)
+    assert "load_avg" in body["os"]
+
+    # gpu list present (empty when cuda unavailable, as in tests)
+    assert isinstance(body["gpu"], list)
+
+
 def test_detect_language_returns_language_and_confidence(client):
     """/detect-language must return detected_language, language_code, and confidence."""
     c, model = client
