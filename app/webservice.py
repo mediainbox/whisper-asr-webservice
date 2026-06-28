@@ -258,6 +258,13 @@ async def asr(
 ):
     filename = getattr(audio_file, "filename", "") or "audio.wav"
 
+    if _transcribe_semaphore._value == 0:
+        from fastapi import Response
+        return Response(status_code=503, headers={"Retry-After": "5"})
+    if separate_vocals and _vocals_semaphore._value == 0:
+        from fastapi import Response
+        return Response(status_code=503, headers={"Retry-After": "5"})
+
     newrelic.agent.add_custom_attributes(
         {
             "asr.engine": CONFIG.ASR_ENGINE,

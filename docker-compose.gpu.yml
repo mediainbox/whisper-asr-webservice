@@ -14,11 +14,13 @@ services:
               capabilities: [gpu]
     environment:
       - ASR_MODEL=base
+      - TMPDIR=/scratch
     ports:
       - "9000:9000"
     volumes:
       - ./app:/app/app
       - cache-whisper:/root/.cache
+      - /opt/whisper-scratch:/scratch
 
 volumes:
   cache-whisper:
