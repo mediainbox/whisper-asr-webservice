@@ -4,6 +4,14 @@ Changelog
 Unreleased
 ----------
 
+[2.5.2] (2026-06-28)
+--------------------
+
+### Fixed
+
+- Return `503 Service Unavailable` with `Retry-After: 5` from `/asr` when all transcribe or vocals slots are full, allowing the GCP load balancer (IN_FLIGHT mode) to route traffic away from saturated nodes instead of queuing requests inside the app
+- Move `TemporaryDirectory` files to a host bind mount via `TMPDIR=/scratch` to prevent disk exhaustion in Docker's overlay filesystem when vocal separation requests queue with full audio clips held in temp dirs
+
 [2.5.1] (2026-06-28)
 --------------------
 
