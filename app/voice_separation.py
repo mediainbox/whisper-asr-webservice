@@ -103,8 +103,10 @@ def separate_vocal(
     if input_audio.ndim == 1:
         input_audio = np.asfortranarray([input_audio, input_audio])
 
-    # Convert mix to torch tensor and move to GPU
-    input_audio = torch.from_numpy(input_audio).to(device)
+    # Keep the full mix on CPU and move only the current chunk to the GPU inside the loop
+    # below. Moving the whole clip to VRAM here is O(n) in duration — a 2 h stereo clip is
+    # ~2.5 GB of VRAM before any inference, which OOMs the GPU on long files.
+    input_audio = torch.from_numpy(input_audio)
 
     margin = sample_rate if sample_rate < audio_chunk_size else audio_chunk_size
     samples = input_audio.shape[-1]
@@ -112,7 +114,8 @@ def separate_vocal(
     if chunks == 0 or samples < audio_chunk_size:
         audio_chunk_size = samples
 
-    # Pre-allocate chunks on GPU
+    # Slice the mix into overlapping chunks (CPU views; each is moved to the GPU one at a
+    # time inside the loop, so VRAM use is O(1) in clip duration).
     chunk_samples = []
     for skip in range(0, samples, audio_chunk_size):
         s_margin = 0 if skip == 0 else margin
@@ -129,6 +132,7 @@ def separate_vocal(
     amp_dtype = torch.float16 if precision == "fp16" else (torch.bfloat16 if precision == "bf16" else None)
 
     for chunk_mix_position, chunk_mix in enumerate(chunk_samples):
+        chunk_mix = chunk_mix.to(device)  # only this chunk lives in VRAM (O(1) in duration)
         n_sample = chunk_mix.shape[1]
         trim = n_fft // 2
         gen_size = chunk_size - 2 * trim
@@ -296,11 +300,15 @@ def run_separation_gpu(
         precision=precision,
     )
 
-    audio_vocals = audio - target_est if cfg.outputs_instrumental() else target_est
+    if cfg.outputs_instrumental():
+        # vocals = mix - instrumental; write into target_est's buffer to avoid a full extra copy
+        np.subtract(audio, target_est, out=target_est)
+    audio_vocals = target_est
 
-    peak = np.max(np.abs(audio_vocals))
+    # peak without allocating a full abs() copy of the signal (== np.abs(x).max() for real x)
+    peak = float(max(audio_vocals.max(), -audio_vocals.min()))
     if np.isfinite(peak) and peak > 1.0:
-        audio_vocals = audio_vocals / peak
+        audio_vocals /= peak  # in-place, no extra full-length copy
 
     soundfile.write(str(output_path), audio_vocals.T, samplerate=cfg.sample_rate)
 

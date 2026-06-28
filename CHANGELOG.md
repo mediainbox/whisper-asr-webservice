@@ -4,6 +4,21 @@ Changelog
 Unreleased
 ----------
 
+[2.5.1] (2026-06-28)
+--------------------
+
+### Fixed
+
+- Vocal separation VRAM scaled with clip length: the whole mix was moved to the GPU at once
+  (`~2.5 GB of VRAM for a 2 h stereo clip` before any inference), causing CUDA out-of-memory
+  on long files. Each chunk is now moved to the GPU one at a time, so VRAM use is O(1) in
+  clip duration. The mix stays on CPU.
+
+### Changed
+
+- `run_separation_gpu` computes the normalization peak without a full `abs()` copy and reuses
+  buffers in place (in-place subtract/divide), cutting peak host RAM during separation.
+
 [2.5.0] (2026-06-26)
 --------------------
 
