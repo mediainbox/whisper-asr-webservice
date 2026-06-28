@@ -13,12 +13,12 @@ steps:
       - -f
       - Dockerfile.gpu
       - -t
-      - ${_REGISTRY}:${_VERSION}
+      - ${_REGISTRY}:v${_VERSION}
       - -t
       - ${_REGISTRY}:latest
       - .
 images:
-  - ${_REGISTRY}:${_VERSION}
+  - ${_REGISTRY}:v${_VERSION}
   - ${_REGISTRY}:latest
 options:
   machineType: E2_HIGHCPU_8
