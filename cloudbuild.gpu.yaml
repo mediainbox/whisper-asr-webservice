@@ -1,0 +1,25 @@
+# Cloud Build config for the GPU image (native linux/amd64 — no local QEMU emulation).
+# Usage:
+#   gcloud builds submit --config cloudbuild.gpu.yaml \
+#     --substitutions=_VERSION=2.5.1 .
+# _REGISTRY defaults to the Mediainbox Artifact Registry repo; override if needed.
+substitutions:
+  _REGISTRY: us-central1-docker.pkg.dev/cloud-logger-177603/mediainbox/whisper-asr-webservice-gpu
+  _VERSION: latest
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.gpu
+      - -t
+      - ${_REGISTRY}:${_VERSION}
+      - -t
+      - ${_REGISTRY}:latest
+      - .
+images:
+  - ${_REGISTRY}:${_VERSION}
+  - ${_REGISTRY}:latest
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 3600s
