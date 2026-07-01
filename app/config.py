@@ -69,3 +69,8 @@ class CONFIG:
     # decode N full clips into RAM at once even when TRANSCRIBE_CONCURRENCY is 1.
     # ponytail: fixed cap on concurrent decodes; raise per available host RAM, not per GPU.
     DECODE_CONCURRENCY = int(os.getenv("DECODE_CONCURRENCY", os.getenv("GPU_CONCURRENCY", 2)))
+
+    # Max concurrent HTTP connections accepted by uvicorn. Requests beyond this limit
+    # receive an immediate 503 at the transport layer — before any app code runs.
+    # Prevents FD exhaustion under traffic spikes. 0 = unlimited (uvicorn default).
+    UVICORN_LIMIT_CONCURRENCY = int(os.getenv("UVICORN_LIMIT_CONCURRENCY", 0)) or None
