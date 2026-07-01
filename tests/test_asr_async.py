@@ -162,7 +162,10 @@ def test_decode_concurrency_is_bounded(client):
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = [f.result() for f in [pool.submit(fire) for _ in range(8)]]
 
-    assert all(r.status_code == 200 for r in results)
+    # Requests beyond capacity at acquire time are rejected with 503 (fast backpressure)
+    # instead of queuing indefinitely — so not all 8 are expected to return 200.
+    assert all(r.status_code in (200, 503) for r in results)
+    assert any(r.status_code == 200 for r in results), "no request got through at all"
     assert state["max"] <= limit, f"decode concurrency {state['max']} exceeded cap {limit}"
     if limit > 1:
         assert state["max"] > 1, "decode never ran in parallel; cap is not just serializing"

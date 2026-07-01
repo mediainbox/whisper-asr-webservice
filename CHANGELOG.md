@@ -4,6 +4,14 @@ Changelog
 Unreleased
 ----------
 
+[2.5.3] (2026-07-01)
+--------------------
+
+### Fixed
+
+- The 503-on-full-capacity check for `/asr` was only evaluated once at request entry — a stale snapshot. Capacity could fill during upload I/O or an admission burst, and `asyncio.Semaphore` has no acquire timeout, so admitted requests piled up indefinitely in `_requests_active` waiting on `async with`. The check now runs immediately before each of the three semaphore acquisitions (decode, vocals, transcribe), including the previously-unchecked decode gate, so requests are rejected at the real moment of contention instead of queuing forever.
+- Added `UVICORN_LIMIT_CONCURRENCY` (uvicorn's native `limit_concurrency`) as a second line of defense against connection/FD exhaustion from traffic spikes, independent of the app-level semaphore gates.
+
 [2.5.2] (2026-06-28)
 --------------------
 

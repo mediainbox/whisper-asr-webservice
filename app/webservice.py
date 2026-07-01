@@ -42,6 +42,19 @@ _transcribe_semaphore = asyncio.Semaphore(CONFIG.TRANSCRIBE_CONCURRENCY)
 # Without this gate, concurrent uploads decode all clips into RAM at once and OOM the host.
 _decode_semaphore    = asyncio.Semaphore(CONFIG.DECODE_CONCURRENCY)
 
+def _reject_if_full(sem: asyncio.Semaphore):
+    """Reject with 503 right at the point of use instead of queuing indefinitely
+    on `async with sem`. A single check at request entry is a stale snapshot —
+    capacity can fill during upload I/O or a burst of concurrent admissions
+    between the check and the actual acquire, and asyncio.Semaphore has no
+    acquire timeout, so admitted-but-blocked requests pile up in _requests_active
+    forever. Checking again immediately before each acquire closes that gap."""
+    if sem._value == 0:
+        from fastapi import Response
+        return Response(status_code=503, headers={"Retry-After": "5"})
+    return None
+
+
 _start_time = time.time()
 _requests_total = 0
 _requests_active = 0
@@ -317,6 +330,9 @@ async def asr(
                 ):
                     # CPU phase: decode audio and fetch cached model — no GPU needed.
                     # Decode is the RAM-heavy step, so it goes under the decode gate.
+                    if rejected := _reject_if_full(_decode_semaphore):
+                        _requests_active -= 1
+                        return rejected
                     async with _decode_semaphore:
                         audio_raw, vs_cfg, vs_model, vs_device = await asyncio.to_thread(
                             load_audio_for_separation,
@@ -324,6 +340,9 @@ async def asr(
                             model_id=CONFIG.VOICE_SEPARATION_MODEL,
                         )
                     # GPU phase: vocal separation inference
+                    if rejected := _reject_if_full(_vocals_semaphore):
+                        _requests_active -= 1
+                        return rejected
                     async with _vocals_semaphore:
                         await asyncio.to_thread(
                             run_separation_gpu,
@@ -340,6 +359,9 @@ async def asr(
                         newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
                         timer("load_audio(vocals)", enabled=verbose),
                     ):
+                        if rejected := _reject_if_full(_decode_semaphore):
+                            _requests_active -= 1
+                            return rejected
                         async with _decode_semaphore:
                             audio_np = await asyncio.to_thread(load_audio, f_vocals, encode=True)
 
@@ -347,6 +369,9 @@ async def asr(
                     newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                     timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
                 ):
+                    if rejected := _reject_if_full(_transcribe_semaphore):
+                        _requests_active -= 1
+                        return rejected
                     async with _transcribe_semaphore:
                         result = await asyncio.to_thread(
                             asr_model.transcribe,
@@ -364,6 +389,9 @@ async def asr(
             newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
             timer("load_audio(original)", enabled=verbose),
         ):
+            if rejected := _reject_if_full(_decode_semaphore):
+                _requests_active -= 1
+                return rejected
             async with _decode_semaphore:
                 audio_np = await asyncio.to_thread(load_audio, audio_file.file, encode)
 
@@ -375,6 +403,9 @@ async def asr(
                 newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                 timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
             ):
+                if rejected := _reject_if_full(_transcribe_semaphore):
+                    _requests_active -= 1
+                    return rejected
                 async with _transcribe_semaphore:
                     result = await asyncio.to_thread(
                         asr_model.transcribe,
@@ -486,7 +517,8 @@ async def detect_language(
 )
 @click.version_option(version=projectMetadata["Version"])
 def start(host: str, port: int, workers: int):
-    uvicorn.run("app.webservice:app", host=host, port=port, workers=workers)
+    uvicorn.run("app.webservice:app", host=host, port=port, workers=workers,
+                limit_concurrency=CONFIG.UVICORN_LIMIT_CONCURRENCY)
 
 
 if __name__ == "__main__":
