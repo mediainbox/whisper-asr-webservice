@@ -4,6 +4,13 @@ Changelog
 Unreleased
 ----------
 
+[2.5.4] (2026-07-01)
+--------------------
+
+### Fixed
+
+- `/stats` GPU entries were silently missing `utilization_percent` and `temperature_c` in production: `torch.cuda.utilization()`/`torch.cuda.temperature()` require `pynvml` under the hood, which was never declared as a dependency, so the `try/except` around them swallowed the failure. Added `nvidia-ml-py` (the official pynvml package) as a dependency.
+
 [2.5.3] (2026-07-01)
 --------------------
 
