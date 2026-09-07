@@ -3,6 +3,7 @@ import importlib.metadata
 import io
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from os import path
 from pathlib import Path
@@ -68,6 +69,14 @@ projectMetadata = importlib.metadata.metadata("whisper-asr-webservice")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # asyncio.to_thread runs on the loop's default executor, which lazily sizes
+    # itself to min(32, cpu_count+4) — e.g. 8 threads on a 4-vCPU box. That's far
+    # below DECODE+VOCALS+TRANSCRIBE_CONCURRENCY, so requests queue for a free
+    # thread even after acquiring their semaphore slot, capping real concurrency
+    # (and GPU utilization) well under what the semaphores allow. Size the pool to
+    # the semaphores so they're the actual admission control again.
+    max_workers = CONFIG.DECODE_CONCURRENCY + CONFIG.VOCALS_CONCURRENCY + CONFIG.TRANSCRIBE_CONCURRENCY
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
     asr_model.load_model()
     try:
         yield
