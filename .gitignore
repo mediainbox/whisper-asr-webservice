@@ -42,3 +42,5 @@ pip-wheel-metadata
 poetry/core/*
 
 public
+
+.claude/settings.local.json
