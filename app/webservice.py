@@ -312,74 +312,106 @@ async def asr(
 
     result = None
 
-    if separate_vocals:
-        suffix = Path(filename).suffix or ".wav"
-
-        with (
-            newrelic.agent.FunctionTrace(name="asr.upload_read_all", group="ASR"),
-            timer("upload_read_all", enabled=verbose),
-        ):
-            async_bytes = await audio_file.read()
-
-        with TemporaryDirectory() as td:
-            td = Path(td)
-
-            in_path, out_path = td / f"in{suffix}", td / "vocals.wav"
-
-            with open(in_path, "wb") as f_in:
-                f_in.write(async_bytes)
+    # The whole body runs under this try so _requests_active is always released —
+    # on a clean return, an early 503 rejection, or an unhandled exception (e.g. the
+    # CUDA OOMs seen in prod, which otherwise leaked the counter permanently).
+    try:
+        if separate_vocals:
+            suffix = Path(filename).suffix or ".wav"
 
             with (
-                newrelic.agent.FunctionTrace(name="asr.total_after_disk", group="ASR"),
-                timer("total_after_disk", enabled=verbose),
+                newrelic.agent.FunctionTrace(name="asr.upload_read_all", group="ASR"),
+                timer("upload_read_all", enabled=verbose),
             ):
-                with (
-                    newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
-                    timer("separate_vocals", enabled=verbose),
-                ):
-                    # CPU phase: decode audio and fetch cached model — no GPU needed.
-                    # Decode is the RAM-heavy step, so it goes under the decode gate.
-                    if rejected := _reject_if_full(_decode_semaphore):
-                        _requests_active -= 1
-                        return rejected
-                    async with _decode_semaphore:
-                        audio_raw, vs_cfg, vs_model, vs_device = await asyncio.to_thread(
-                            load_audio_for_separation,
-                            in_path,
-                            model_id=CONFIG.VOICE_SEPARATION_MODEL,
-                        )
-                    # GPU phase: vocal separation inference
-                    if rejected := _reject_if_full(_vocals_semaphore):
-                        _requests_active -= 1
-                        return rejected
-                    async with _vocals_semaphore:
-                        await asyncio.to_thread(
-                            run_separation_gpu,
-                            audio_raw,
-                            vs_cfg,
-                            vs_model,
-                            vs_device,
-                            out_path,
-                            precision=CONFIG.VOICE_SEPARATION_PRECISION,
-                        )
+                async_bytes = await audio_file.read()
 
-                with open(out_path, "rb") as f_vocals:
+            with TemporaryDirectory() as td:
+                td = Path(td)
+
+                in_path, out_path = td / f"in{suffix}", td / "vocals.wav"
+
+                with open(in_path, "wb") as f_in:
+                    f_in.write(async_bytes)
+
+                with (
+                    newrelic.agent.FunctionTrace(name="asr.total_after_disk", group="ASR"),
+                    timer("total_after_disk", enabled=verbose),
+                ):
                     with (
-                        newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
-                        timer("load_audio(vocals)", enabled=verbose),
+                        newrelic.agent.FunctionTrace(name="asr.separate_vocals", group="ASR"),
+                        timer("separate_vocals", enabled=verbose),
                     ):
+                        # CPU phase: decode audio and fetch cached model — no GPU needed.
+                        # Decode is the RAM-heavy step, so it goes under the decode gate.
                         if rejected := _reject_if_full(_decode_semaphore):
-                            _requests_active -= 1
                             return rejected
                         async with _decode_semaphore:
-                            audio_np = await asyncio.to_thread(load_audio, f_vocals, encode=True)
+                            audio_raw, vs_cfg, vs_model, vs_device = await asyncio.to_thread(
+                                load_audio_for_separation,
+                                in_path,
+                                model_id=CONFIG.VOICE_SEPARATION_MODEL,
+                            )
+                        # GPU phase: vocal separation inference
+                        if rejected := _reject_if_full(_vocals_semaphore):
+                            return rejected
+                        async with _vocals_semaphore:
+                            await asyncio.to_thread(
+                                run_separation_gpu,
+                                audio_raw,
+                                vs_cfg,
+                                vs_model,
+                                vs_device,
+                                out_path,
+                                precision=CONFIG.VOICE_SEPARATION_PRECISION,
+                            )
 
+                    with open(out_path, "rb") as f_vocals:
+                        with (
+                            newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
+                            timer("load_audio(vocals)", enabled=verbose),
+                        ):
+                            if rejected := _reject_if_full(_decode_semaphore):
+                                return rejected
+                            async with _decode_semaphore:
+                                audio_np = await asyncio.to_thread(load_audio, f_vocals, encode=True)
+
+                    with (
+                        newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
+                        timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
+                    ):
+                        if rejected := _reject_if_full(_transcribe_semaphore):
+                            return rejected
+                        async with _transcribe_semaphore:
+                            result = await asyncio.to_thread(
+                                asr_model.transcribe,
+                                audio_np,
+                                task,
+                                language,
+                                initial_prompt,
+                                vad_filter,
+                                word_timestamps,
+                                {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
+                                output,
+                            )
+        else:
+            with (
+                newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
+                timer("load_audio(original)", enabled=verbose),
+            ):
+                if rejected := _reject_if_full(_decode_semaphore):
+                    return rejected
+                async with _decode_semaphore:
+                    audio_np = await asyncio.to_thread(load_audio, audio_file.file, encode)
+
+            with (
+                newrelic.agent.FunctionTrace(name="asr.total_after_decode", group="ASR"),
+                timer("total_after_decode", enabled=verbose),
+            ):
                 with (
                     newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                     timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
                 ):
                     if rejected := _reject_if_full(_transcribe_semaphore):
-                        _requests_active -= 1
                         return rejected
                     async with _transcribe_semaphore:
                         result = await asyncio.to_thread(
@@ -393,42 +425,8 @@ async def asr(
                             {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
                             output,
                         )
-    else:
-        with (
-            newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
-            timer("load_audio(original)", enabled=verbose),
-        ):
-            if rejected := _reject_if_full(_decode_semaphore):
-                _requests_active -= 1
-                return rejected
-            async with _decode_semaphore:
-                audio_np = await asyncio.to_thread(load_audio, audio_file.file, encode)
-
-        with (
-            newrelic.agent.FunctionTrace(name="asr.total_after_decode", group="ASR"),
-            timer("total_after_decode", enabled=verbose),
-        ):
-            with (
-                newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
-                timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
-            ):
-                if rejected := _reject_if_full(_transcribe_semaphore):
-                    _requests_active -= 1
-                    return rejected
-                async with _transcribe_semaphore:
-                    result = await asyncio.to_thread(
-                        asr_model.transcribe,
-                        audio_np,
-                        task,
-                        language,
-                        initial_prompt,
-                        vad_filter,
-                        word_timestamps,
-                        {"diarize": diarize, "min_speakers": min_speakers, "max_speakers": max_speakers},
-                        output,
-                    )
-
-    _requests_active -= 1
+    finally:
+        _requests_active -= 1
 
     return StreamingResponse(
         result,

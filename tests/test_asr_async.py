@@ -122,6 +122,22 @@ def test_asr_response_contains_transcription(client):
     assert "audio.wav" in response.headers.get("content-disposition", "")
 
 
+def test_requests_active_not_leaked_on_exception(client):
+    """A crash mid-request (e.g. the CUDA OOMs seen in prod) must not leak
+    requests.active — the counter should return to 0 once the request unwinds."""
+    c, model = client
+    model.transcribe.side_effect = RuntimeError("boom")
+
+    with patch("app.webservice.load_audio", return_value=FAKE_AUDIO_NP):
+        with pytest.raises(RuntimeError):
+            c.post(
+                "/asr",
+                files={"audio_file": ("audio.wav", io.BytesIO(FAKE_AUDIO), "audio/wav")},
+            )
+
+    assert c.get("/stats").json()["requests"]["active"] == 0
+
+
 # ---------------------------------------------------------------------------
 # Behavior: /detect-language returns language and confidence
 # ---------------------------------------------------------------------------
