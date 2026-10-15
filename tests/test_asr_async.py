@@ -320,3 +320,57 @@ def test_vocals_gate_rejects_after_wait(client):
     assert all(r.status_code in (200, 503) for r in results)
     assert c.get("/stats").json()["requests"]["active"] == 0
     assert ws._vocals_semaphore._value == ws.CONFIG.VOCALS_CONCURRENCY
+
+
+def _fire_transcribe_burst(c, model, ws, n, transcribe_s, transcribe_wait_s):
+    """n concurrent plain /asr requests whose transcription holds the GPU gate for
+    transcribe_s, with decode widened so a 503 can only come from the transcribe gate."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def slow_transcribe(*_args, **_kwargs):
+        time.sleep(transcribe_s)
+        return io.StringIO("hello world")
+
+    model.transcribe.side_effect = slow_transcribe
+
+    def fire():
+        return c.post(
+            "/asr",
+            files={"audio_file": ("audio.wav", io.BytesIO(FAKE_AUDIO), "audio/wav")},
+        )
+
+    with patch("app.webservice.load_audio", return_value=FAKE_AUDIO_NP), patch.object(
+        ws, "_decode_semaphore", asyncio.Semaphore(n)
+    ), patch.object(ws.CONFIG, "TRANSCRIBE_WAIT_SECONDS", transcribe_wait_s):
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            return [f.result() for f in [pool.submit(fire) for _ in range(n)]]
+
+
+def test_transcribe_gate_waits_for_slot(client):
+    """Requests beyond TRANSCRIBE_CONCURRENCY wait for a GPU slot instead of getting 503."""
+    import app.webservice as ws
+
+    c, model = client
+    n = ws._transcribe_semaphore._value + 2
+
+    results = _fire_transcribe_burst(c, model, ws, n, transcribe_s=0.1, transcribe_wait_s=30)
+
+    assert [r.status_code for r in results] == [200] * n
+
+
+def test_transcribe_gate_rejects_after_wait(client):
+    """When no transcription slot frees up within TRANSCRIBE_WAIT_SECONDS: 503 with
+    Retry-After, and no slot or active-request count is leaked."""
+    import app.webservice as ws
+
+    c, model = client
+    n = ws._transcribe_semaphore._value + 2
+
+    results = _fire_transcribe_burst(c, model, ws, n, transcribe_s=0.5, transcribe_wait_s=0.1)
+
+    rejected = [r for r in results if r.status_code == 503]
+    assert rejected, "expected 503 once the wait expired"
+    assert all(r.headers.get("retry-after") == "5" for r in rejected)
+    assert all(r.status_code in (200, 503) for r in results)
+    assert c.get("/stats").json()["requests"]["active"] == 0
+    assert ws._transcribe_semaphore._value == ws.CONFIG.TRANSCRIBE_CONCURRENCY

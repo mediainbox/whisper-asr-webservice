@@ -43,18 +43,6 @@ _transcribe_semaphore = asyncio.Semaphore(CONFIG.TRANSCRIBE_CONCURRENCY)
 # Without this gate, concurrent uploads decode all clips into RAM at once and OOM the host.
 _decode_semaphore    = asyncio.Semaphore(CONFIG.DECODE_CONCURRENCY)
 
-def _reject_if_full(sem: asyncio.Semaphore):
-    """Reject with 503 right at the point of use instead of queuing indefinitely
-    on `async with sem`. A single check at request entry is a stale snapshot —
-    capacity can fill during upload I/O or a burst of concurrent admissions
-    between the check and the actual acquire, and asyncio.Semaphore has no
-    acquire timeout, so admitted-but-blocked requests pile up in _requests_active
-    forever. Checking again immediately before each acquire closes that gap."""
-    if sem._value == 0:
-        from fastapi import Response
-        return Response(status_code=503, headers={"Retry-After": "5"})
-    return None
-
 
 @asynccontextmanager
 async def _gate_slot(sem: asyncio.Semaphore, wait_s: float):
@@ -305,9 +293,6 @@ async def asr(
 ):
     filename = getattr(audio_file, "filename", "") or "audio.wav"
 
-    if _transcribe_semaphore._value == 0:
-        from fastapi import Response
-        return Response(status_code=503, headers={"Retry-After": "5"})
 
     newrelic.agent.add_custom_attributes(
         {
@@ -395,9 +380,7 @@ async def asr(
                         newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                         timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
                     ):
-                        if rejected := _reject_if_full(_transcribe_semaphore):
-                            return rejected
-                        async with _transcribe_semaphore:
+                        async with _gate_slot(_transcribe_semaphore, CONFIG.TRANSCRIBE_WAIT_SECONDS):
                             result = await asyncio.to_thread(
                                 asr_model.transcribe,
                                 audio_np,
@@ -425,9 +408,7 @@ async def asr(
                     newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),
                     timer(f"transcribe({CONFIG.ASR_ENGINE})", enabled=verbose),
                 ):
-                    if rejected := _reject_if_full(_transcribe_semaphore):
-                        return rejected
-                    async with _transcribe_semaphore:
+                    async with _gate_slot(_transcribe_semaphore, CONFIG.TRANSCRIBE_WAIT_SECONDS):
                         result = await asyncio.to_thread(
                             asr_model.transcribe,
                             audio_np,
