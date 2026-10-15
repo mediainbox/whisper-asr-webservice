@@ -4,6 +4,12 @@ Changelog
 Unreleased
 ----------
 
+### Changed
+
+- The decode gate now waits up to `DECODE_WAIT_SECONDS` (default 30) for a free slot
+  before answering 503, instead of rejecting immediately. Bursts no longer bounce with
+  503 while the GPU is idle. `DECODE_WAIT_SECONDS=0` restores the old behavior.
+
 [2.5.4] (2026-07-01)
 --------------------
 
