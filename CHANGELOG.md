@@ -12,6 +12,9 @@ Unreleased
 - The vocal-separation gate (`separate_vocals=true`) waits the same way, up to
   `VOCALS_WAIT_SECONDS` (default 30). The entry-time vocals check that answered 503
   before reading the upload is gone.
+- The transcription GPU gate waits the same way, up to `TRANSCRIBE_WAIT_SECONDS`
+  (default 30). Its entry-time check is gone too, so no gate answers 503 instantly
+  anymore; `_reject_if_full` is removed.
 
 [2.5.4] (2026-07-01)
 --------------------
