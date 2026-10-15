@@ -56,6 +56,28 @@ def _reject_if_full(sem: asyncio.Semaphore):
     return None
 
 
+@asynccontextmanager
+async def _decode_slot():
+    """Decode gate: wait up to DECODE_WAIT_SECONDS for a free slot before rejecting.
+    Decodes are short (sub-second to a few seconds), so a brief wait absorbs bursts that
+    an immediate reject would bounce as 503 even with the GPU idle. Still bounded, so
+    requests never pile up indefinitely."""
+    # ponytail: 50 ms poll instead of wait_for(sem.acquire()) — wait_for can leak a
+    # semaphore slot on timeout in py3.10. Check + acquire has no await in between, so
+    # the acquire never blocks. Not FIFO; fine at this concurrency.
+    deadline = time.monotonic() + CONFIG.DECODE_WAIT_SECONDS
+    while _decode_semaphore.locked():
+        if time.monotonic() >= deadline:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=503, headers={"Retry-After": "5"})
+        await asyncio.sleep(0.05)
+    await _decode_semaphore.acquire()
+    try:
+        yield
+    finally:
+        _decode_semaphore.release()
+
+
 _start_time = time.time()
 _requests_total = 0
 _requests_active = 0
@@ -343,9 +365,7 @@ async def asr(
                     ):
                         # CPU phase: decode audio and fetch cached model — no GPU needed.
                         # Decode is the RAM-heavy step, so it goes under the decode gate.
-                        if rejected := _reject_if_full(_decode_semaphore):
-                            return rejected
-                        async with _decode_semaphore:
+                        async with _decode_slot():
                             audio_raw, vs_cfg, vs_model, vs_device = await asyncio.to_thread(
                                 load_audio_for_separation,
                                 in_path,
@@ -370,9 +390,7 @@ async def asr(
                             newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
                             timer("load_audio(vocals)", enabled=verbose),
                         ):
-                            if rejected := _reject_if_full(_decode_semaphore):
-                                return rejected
-                            async with _decode_semaphore:
+                            async with _decode_slot():
                                 audio_np = await asyncio.to_thread(load_audio, f_vocals, encode=True)
 
                     with (
@@ -398,9 +416,7 @@ async def asr(
                 newrelic.agent.FunctionTrace(name="asr.load_audio_original", group="ASR"),
                 timer("load_audio(original)", enabled=verbose),
             ):
-                if rejected := _reject_if_full(_decode_semaphore):
-                    return rejected
-                async with _decode_semaphore:
+                async with _decode_slot():
                     audio_np = await asyncio.to_thread(load_audio, audio_file.file, encode)
 
             with (

@@ -174,17 +174,54 @@ def test_decode_concurrency_is_bounded(client):
             files={"audio_file": ("audio.wav", io.BytesIO(FAKE_AUDIO), "audio/wav")},
         )
 
-    with patch("app.webservice.load_audio", side_effect=blocking_load_audio):
+    # Widen the transcribe gate (1 in tests) so any 503 could only come from decode.
+    with patch("app.webservice.load_audio", side_effect=blocking_load_audio), patch.object(
+        ws, "_transcribe_semaphore", asyncio.Semaphore(8)
+    ):
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = [f.result() for f in [pool.submit(fire) for _ in range(8)]]
 
-    # Requests beyond capacity at acquire time are rejected with 503 (fast backpressure)
-    # instead of queuing indefinitely — so not all 8 are expected to return 200.
-    assert all(r.status_code in (200, 503) for r in results)
-    assert any(r.status_code == 200 for r in results), "no request got through at all"
+    # Decodes are short, so requests beyond capacity wait for a slot (DECODE_WAIT_SECONDS)
+    # instead of bouncing with 503.
+    assert [r.status_code for r in results] == [200] * 8
     assert state["max"] <= limit, f"decode concurrency {state['max']} exceeded cap {limit}"
     if limit > 1:
         assert state["max"] > 1, "decode never ran in parallel; cap is not just serializing"
+
+
+def test_decode_gate_rejects_after_wait(client):
+    """When no decode slot frees up within DECODE_WAIT_SECONDS, the request gets 503 with
+    Retry-After, and the active-request counter is still released."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import app.webservice as ws
+
+    c, model = client
+    model.transcribe.return_value = io.StringIO("hello world")
+    n = ws._decode_semaphore._value + 2
+
+    def slow_load_audio(*_args, **_kwargs):
+        time.sleep(0.5)
+        return FAKE_AUDIO_NP
+
+    def fire():
+        return c.post(
+            "/asr",
+            files={"audio_file": ("audio.wav", io.BytesIO(FAKE_AUDIO), "audio/wav")},
+        )
+
+    with patch("app.webservice.load_audio", side_effect=slow_load_audio), patch.object(
+        ws.CONFIG, "DECODE_WAIT_SECONDS", 0.1
+    ):
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            results = [f.result() for f in [pool.submit(fire) for _ in range(n)]]
+
+    rejected = [r for r in results if r.status_code == 503]
+    assert rejected, "expected 503 once the wait expired"
+    assert all(r.headers.get("retry-after") == "5" for r in rejected)
+    assert all(r.status_code in (200, 503) for r in results)
+    assert c.get("/stats").json()["requests"]["active"] == 0
+    assert ws._decode_semaphore._value == ws.CONFIG.DECODE_CONCURRENCY
 
 
 def test_stats_exposes_decode_os_and_gpu(client):
