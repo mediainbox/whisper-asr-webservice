@@ -57,25 +57,28 @@ def _reject_if_full(sem: asyncio.Semaphore):
 
 
 @asynccontextmanager
-async def _decode_slot():
-    """Decode gate: wait up to DECODE_WAIT_SECONDS for a free slot before rejecting.
-    Decodes are short (sub-second to a few seconds), so a brief wait absorbs bursts that
-    an immediate reject would bounce as 503 even with the GPU idle. Still bounded, so
-    requests never pile up indefinitely."""
+async def _gate_slot(sem: asyncio.Semaphore, wait_s: float):
+    """Wait up to wait_s for a free slot in sem before rejecting with 503.
+    Bursts that fill a gate for a few seconds no longer bounce as 503 while the GPU
+    still has headroom. Still bounded, so requests never pile up indefinitely."""
     # ponytail: 50 ms poll instead of wait_for(sem.acquire()) — wait_for can leak a
     # semaphore slot on timeout in py3.10. Check + acquire has no await in between, so
     # the acquire never blocks. Not FIFO; fine at this concurrency.
-    deadline = time.monotonic() + CONFIG.DECODE_WAIT_SECONDS
-    while _decode_semaphore.locked():
+    deadline = time.monotonic() + wait_s
+    while sem.locked():
         if time.monotonic() >= deadline:
             from fastapi import HTTPException
             raise HTTPException(status_code=503, headers={"Retry-After": "5"})
         await asyncio.sleep(0.05)
-    await _decode_semaphore.acquire()
+    await sem.acquire()
     try:
         yield
     finally:
-        _decode_semaphore.release()
+        sem.release()
+
+
+def _decode_slot():
+    return _gate_slot(_decode_semaphore, CONFIG.DECODE_WAIT_SECONDS)
 
 
 _start_time = time.time()
@@ -305,9 +308,6 @@ async def asr(
     if _transcribe_semaphore._value == 0:
         from fastapi import Response
         return Response(status_code=503, headers={"Retry-After": "5"})
-    if separate_vocals and _vocals_semaphore._value == 0:
-        from fastapi import Response
-        return Response(status_code=503, headers={"Retry-After": "5"})
 
     newrelic.agent.add_custom_attributes(
         {
@@ -372,9 +372,7 @@ async def asr(
                                 model_id=CONFIG.VOICE_SEPARATION_MODEL,
                             )
                         # GPU phase: vocal separation inference
-                        if rejected := _reject_if_full(_vocals_semaphore):
-                            return rejected
-                        async with _vocals_semaphore:
+                        async with _gate_slot(_vocals_semaphore, CONFIG.VOCALS_WAIT_SECONDS):
                             await asyncio.to_thread(
                                 run_separation_gpu,
                                 audio_raw,

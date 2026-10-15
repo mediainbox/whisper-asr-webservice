@@ -9,6 +9,9 @@ Unreleased
 - The decode gate now waits up to `DECODE_WAIT_SECONDS` (default 30) for a free slot
   before answering 503, instead of rejecting immediately. Bursts no longer bounce with
   503 while the GPU is idle. `DECODE_WAIT_SECONDS=0` restores the old behavior.
+- The vocal-separation gate (`separate_vocals=true`) waits the same way, up to
+  `VOCALS_WAIT_SECONDS` (default 30). The entry-time vocals check that answered 503
+  before reading the upload is gone.
 
 [2.5.4] (2026-07-01)
 --------------------

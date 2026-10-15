@@ -5,6 +5,7 @@ and do not block the async event loop.
 import asyncio
 import io
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -263,3 +264,59 @@ def test_detect_language_returns_language_and_confidence(client):
     assert body["language_code"] == "es"
     assert body["detected_language"] == "spanish"
     assert body["confidence"] == pytest.approx(0.97)
+
+
+def _fire_vocals_burst(c, ws, n, separation_s, vocals_wait_s):
+    """n concurrent /asr?separate_vocals=true with the transcribe gate widened, so a 503
+    can only come from the vocals gate."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def fake_separation(_audio, _cfg, _model, _device, out_path, **_kwargs):
+        time.sleep(separation_s)
+        Path(out_path).write_bytes(FAKE_AUDIO)
+
+    def fire():
+        return c.post(
+            "/asr?separate_vocals=true",
+            files={"audio_file": ("audio.wav", io.BytesIO(FAKE_AUDIO), "audio/wav")},
+        )
+
+    with patch("app.webservice.load_audio_for_separation", return_value=(FAKE_AUDIO_NP, None, None, "cpu")), patch(
+        "app.webservice.run_separation_gpu", side_effect=fake_separation
+    ), patch("app.webservice.load_audio", return_value=FAKE_AUDIO_NP), patch.object(
+        ws, "_transcribe_semaphore", asyncio.Semaphore(n)
+    ), patch.object(ws.CONFIG, "VOCALS_WAIT_SECONDS", vocals_wait_s):
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            return [f.result() for f in [pool.submit(fire) for _ in range(n)]]
+
+
+def test_vocals_gate_waits_for_slot(client):
+    """Requests beyond VOCALS_CONCURRENCY wait for a separation slot instead of getting 503."""
+    import app.webservice as ws
+
+    c, model = client
+    model.transcribe.side_effect = lambda *a, **k: io.StringIO("hello world")
+    n = ws._vocals_semaphore._value + 2
+
+    results = _fire_vocals_burst(c, ws, n, separation_s=0.1, vocals_wait_s=30)
+
+    assert [r.status_code for r in results] == [200] * n
+
+
+def test_vocals_gate_rejects_after_wait(client):
+    """When no separation slot frees up within VOCALS_WAIT_SECONDS: 503 with Retry-After,
+    and no slot or active-request count is leaked."""
+    import app.webservice as ws
+
+    c, model = client
+    model.transcribe.side_effect = lambda *a, **k: io.StringIO("hello world")
+    n = ws._vocals_semaphore._value + 2
+
+    results = _fire_vocals_burst(c, ws, n, separation_s=0.5, vocals_wait_s=0.1)
+
+    rejected = [r for r in results if r.status_code == 503]
+    assert rejected, "expected 503 once the wait expired"
+    assert all(r.headers.get("retry-after") == "5" for r in rejected)
+    assert all(r.status_code in (200, 503) for r in results)
+    assert c.get("/stats").json()["requests"]["active"] == 0
+    assert ws._vocals_semaphore._value == ws.CONFIG.VOCALS_CONCURRENCY
