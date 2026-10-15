@@ -71,6 +71,8 @@ class CONFIG:
     DECODE_CONCURRENCY = int(os.getenv("DECODE_CONCURRENCY", os.getenv("GPU_CONCURRENCY", 2)))
     # Seconds a request waits for a free decode slot before getting 503. 0 = reject at once.
     DECODE_WAIT_SECONDS = float(os.getenv("DECODE_WAIT_SECONDS", 30))
+    # Same for the vocal-separation GPU gate (separate_vocals=true). 0 = reject at once.
+    VOCALS_WAIT_SECONDS = float(os.getenv("VOCALS_WAIT_SECONDS", 30))
 
     # Max concurrent HTTP connections accepted by uvicorn. Requests beyond this limit
     # receive an immediate 503 at the transport layer — before any app code runs.
