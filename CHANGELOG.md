@@ -6,6 +6,13 @@ Unreleased
 
 ### Changed
 
+- Vocal separation (`separate_vocals=true`) now streams through disk: ffmpeg decodes to a
+  raw file that is memory-mapped, each 30 s chunk is separated and appended to a raw output
+  file, and Whisper's input is read back from it. Host RAM for that stage no longer holds
+  several full-length copies of the clip — a 1 h 51 min fragment peaks at ~5.4 GiB above
+  idle instead of ~12 GiB (which got the process OOM-killed). Needs ~2x the raw stereo
+  float32 size of the clip as temporary disk in `TMPDIR` (~7 GiB for 3 h). The separation
+  output is unchanged; `/separate-vocals` still returns a peak-normalized 16-bit WAV.
 - The decode gate now waits up to `DECODE_WAIT_SECONDS` (default 30) for a free slot
   before answering 503, instead of rejecting immediately. Bursts no longer bounce with
   503 while the GPU is idle. `DECODE_WAIT_SECONDS=0` restores the old behavior.
