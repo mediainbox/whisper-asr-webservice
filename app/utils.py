@@ -129,6 +129,33 @@ def load_audio(file: BinaryIO, encode=True, sr: int = CONFIG.SAMPLE_RATE):
     else:
         out = file.read()
 
+    return _pcm16_to_float32(out)
+
+
+def load_audio_path(
+    path, sr: int = CONFIG.SAMPLE_RATE, input_kwargs: dict | None = None, gain: float | None = None
+) -> np.ndarray:
+    """
+    Like load_audio(encode=True), but ffmpeg reads the file from `path` itself, so the
+    input never has to be held in RAM. `input_kwargs` are ffmpeg input options (e.g. the
+    format of a headerless raw PCM file); `gain` applies a linear volume before downmixing.
+    """
+    stream = ffmpeg.input(str(path), threads=0, **(input_kwargs or {}))
+    if gain is not None:
+        stream = stream.filter("volume", gain)
+    # ponytail: the mono 16 kHz output is still captured through the pipe into RAM
+    # (~0.35 GiB s16 + ~0.7 GiB float32 for 3 h); next step if needed is to decode to a
+    # file and np.memmap it.
+    try:
+        out, _ = stream.output("-", format="s16le", acodec="pcm_s16le", ac=1, ar=sr).run(
+            cmd="ffmpeg", capture_stdout=True, capture_stderr=True
+        )
+    except ffmpeg.Error as e:
+        raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
+    return _pcm16_to_float32(out)
+
+
+def _pcm16_to_float32(out: bytes) -> np.ndarray:
     # frombuffer is a 1-D view (no copy); astype makes the single float32 copy we keep,
     # then normalize in place. Avoids the extra flatten() copy and the division temporary —
     # peak transient RAM per decode drops from ~6x to ~3x the PCM size.

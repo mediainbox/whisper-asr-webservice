@@ -1,6 +1,7 @@
 import asyncio
 import importlib.metadata
 import io
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +25,7 @@ from app.voice_separation import load_audio_for_separation, run_separation_gpu, 
 
 from app.config import CONFIG
 from app.factory.asr_model_factory import ASRModelFactory
-from app.utils import load_audio, timer
+from app.utils import load_audio, load_audio_path, timer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -335,7 +336,7 @@ async def asr(
             with TemporaryDirectory() as td:
                 td = Path(td)
 
-                in_path, out_path = td / f"in{suffix}", td / "vocals.wav"
+                in_path, out_path = td / f"in{suffix}", td / "vocals.f32"
 
                 with open(in_path, "wb") as f_in:
                     f_in.write(async_bytes)
@@ -358,7 +359,7 @@ async def asr(
                             )
                         # GPU phase: vocal separation inference
                         async with _gate_slot(_vocals_semaphore, CONFIG.VOCALS_WAIT_SECONDS):
-                            await asyncio.to_thread(
+                            peak = await asyncio.to_thread(
                                 run_separation_gpu,
                                 audio_raw,
                                 vs_cfg,
@@ -367,14 +368,21 @@ async def asr(
                                 out_path,
                                 precision=CONFIG.VOICE_SEPARATION_PRECISION,
                             )
+                        del audio_raw  # drop the mix (memmap) before transcription
 
-                    with open(out_path, "rb") as f_vocals:
-                        with (
-                            newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
-                            timer("load_audio(vocals)", enabled=verbose),
-                        ):
-                            async with _decode_slot():
-                                audio_np = await asyncio.to_thread(load_audio, f_vocals, encode=True)
+                    # out_path is raw f32le stereo, not normalized: apply the 1/peak gain here.
+                    gain = 1.0 / peak if math.isfinite(peak) and peak > 1.0 else None
+                    with (
+                        newrelic.agent.FunctionTrace(name="asr.load_audio_vocals", group="ASR"),
+                        timer("load_audio(vocals)", enabled=verbose),
+                    ):
+                        async with _decode_slot():
+                            audio_np = await asyncio.to_thread(
+                                load_audio_path,
+                                out_path,
+                                input_kwargs={"format": "f32le", "ac": 2, "ar": vs_cfg.sample_rate},
+                                gain=gain,
+                            )
 
                     with (
                         newrelic.agent.FunctionTrace(name="asr.transcribe", group="ASR"),

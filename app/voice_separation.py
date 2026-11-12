@@ -4,11 +4,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import ffmpeg
 import numpy as np
-import soundfile
 import torch
 from huggingface_hub import hf_hub_download
 
@@ -67,7 +66,7 @@ def get_model_and_config(
     return model, cfg
 
 
-def separate_vocal(
+def iter_separated_chunks(
     model: torch.jit.ScriptModule,
     input_audio: np.ndarray,
     device: str,
@@ -78,9 +77,14 @@ def separate_vocal(
     chunks: int = 30,
     use_tta: bool = False,
     precision: str = "fp16",
-) -> np.ndarray:
+) -> Iterator[tuple[int, np.ndarray]]:
     """
     Hacked from https://github.com/seanghay/vocal/blob/main/vocal/__init__.py.
+
+    Yields (pos, chunk) in order: `chunk` is a float32 (2, m) slice of the model output with
+    the overlap margins already trimmed, and `pos` is the sample offset of its first sample.
+    Chunks are contiguous and non-overlapping, so their concatenation is the full output;
+    only one chunk is alive at a time, keeping host RAM O(chunk) instead of O(duration).
     """
     device = device.lower()
     is_cuda = device.startswith("cuda")
@@ -103,36 +107,32 @@ def separate_vocal(
     if input_audio.ndim == 1:
         input_audio = np.asfortranarray([input_audio, input_audio])
 
-    # Keep the full mix on CPU and move only the current chunk to the GPU inside the loop
-    # below. Moving the whole clip to VRAM here is O(n) in duration — a 2 h stereo clip is
-    # ~2.5 GB of VRAM before any inference, which OOMs the GPU on long files.
-    input_audio = torch.from_numpy(input_audio)
-
     margin = sample_rate if sample_rate < audio_chunk_size else audio_chunk_size
     samples = input_audio.shape[-1]
 
     if chunks == 0 or samples < audio_chunk_size:
         audio_chunk_size = samples
 
-    # Slice the mix into overlapping chunks (CPU views; each is moved to the GPU one at a
-    # time inside the loop, so VRAM use is O(1) in clip duration).
-    chunk_samples = []
+    # Overlapping chunk bounds only; the mix itself stays where it is (possibly a memmap on
+    # disk) and each chunk is copied to the device one at a time inside the loop, so neither
+    # VRAM nor host RAM grows with clip duration.
+    chunk_bounds = []
     for skip in range(0, samples, audio_chunk_size):
         s_margin = 0 if skip == 0 else margin
         end = min(skip + audio_chunk_size + margin, samples)
         start = skip - s_margin
-        chunk_samples.append(input_audio[:, start:end])
+        chunk_bounds.append((start, end))
         if end == samples:
             break
 
     margin_size = margin
-    chunked_sources = []
+    pos = 0
 
     amp_enabled = is_cuda and precision in ("fp16", "bf16")
     amp_dtype = torch.float16 if precision == "fp16" else (torch.bfloat16 if precision == "bf16" else None)
 
-    for chunk_mix_position, chunk_mix in enumerate(chunk_samples):
-        chunk_mix = chunk_mix.to(device)  # only this chunk lives in VRAM (O(1) in duration)
+    for chunk_mix_position, (chunk_start, chunk_end) in enumerate(chunk_bounds):
+        chunk_mix = torch.from_numpy(np.ascontiguousarray(input_audio[:, chunk_start:chunk_end])).to(device)
         n_sample = chunk_mix.shape[1]
         trim = n_fft // 2
         gen_size = chunk_size - 2 * trim
@@ -205,13 +205,37 @@ def separate_vocal(
             tar_signal = tar_waves[:, :, trim:-trim].transpose(0, 1).reshape(2, -1).numpy()[:, :-pad]
 
             start = 0 if chunk_mix_position == 0 else margin_size
-            end = None if chunk_mix_position == len(chunk_samples) - 1 else -margin_size
+            end = None if chunk_mix_position == len(chunk_bounds) - 1 else -margin_size
             if margin_size == 0:
                 end = None
 
-        chunked_sources.append([tar_signal[:, start:end]])
+        chunk = tar_signal[:, start:end]
+        yield pos, chunk
+        pos += chunk.shape[1]
 
-    return np.concatenate(chunked_sources, axis=-1)[0]
+
+def separate_vocal(
+    model: torch.jit.ScriptModule,
+    input_audio: np.ndarray,
+    device: str,
+    n_fft: int,
+    sample_rate: int,
+    dim_f: int,
+    hop: int,
+    chunks: int = 30,
+    use_tta: bool = False,
+    precision: str = "fp16",
+) -> np.ndarray:
+    """In-memory variant of iter_separated_chunks: returns the whole (2, n) output."""
+    return np.concatenate(
+        [
+            c
+            for _, c in iter_separated_chunks(
+                model, input_audio, device, n_fft, sample_rate, dim_f, hop, chunks, use_tta, precision
+            )
+        ],
+        axis=-1,
+    )
 
 
 def separate_vocals_from_array(
@@ -243,17 +267,19 @@ def separate_vocals_from_array(
     )
 
 
-def _decode_audio(input_path: str | Path, sample_rate: int) -> np.ndarray:
-    """Decode any audio format to stereo float32 via ffmpeg, avoiding soundfile/audioread limits."""
+def _decode_audio_to_file(input_path: Path, raw_path: Path, sample_rate: int) -> None:
+    """Decode any audio format to raw interleaved stereo f32le on disk via ffmpeg, so the
+    full clip never has to sit in RAM (avoids soundfile/audioread limits too)."""
     try:
-        out, _ = (
+        (
             ffmpeg.input(str(input_path), threads=0)
-            .output("-", format="f32le", ac=2, ar=sample_rate)
-            .run(cmd="ffmpeg", capture_stdout=True, capture_stderr=True)
+            .output(str(raw_path), format="f32le", ac=2, ar=sample_rate)
+            .run(cmd="ffmpeg", capture_stdout=True, capture_stderr=True, overwrite_output=True)
         )
     except ffmpeg.Error as e:
         raise RuntimeError(f"Failed to decode audio for separation: {e.stderr.decode()}") from e
-    return np.frombuffer(out, dtype=np.float32).reshape(-1, 2).T
+    if raw_path.stat().st_size == 0:  # np.memmap cannot map an empty file
+        raise RuntimeError(f"Failed to decode audio for separation: ffmpeg produced no audio from {input_path.name}")
 
 
 def load_audio_for_separation(
@@ -265,11 +291,16 @@ def load_audio_for_separation(
     """
     CPU-only phase: decode audio and warm up the cached model handle.
     Call this before acquiring the GPU semaphore.
-    Returns (audio, cfg, model, device) ready for run_separation_gpu.
+    Returns (audio, cfg, model, device) ready for run_separation_gpu. `audio` is a read-only
+    (2, n) np.memmap over a raw file written next to `input_path` (`<name>.f32`), so it is
+    cleaned up together with the caller's temp dir.
     """
     device = (device or ("cuda" if torch.cuda.is_available() else "cpu")).lower()
     model, cfg = get_model_and_config(model_id=model_id, repo_id=repo_id, device=device)
-    audio = _decode_audio(input_path, cfg.sample_rate)
+    input_path = Path(input_path)
+    raw_path = input_path.with_name(input_path.name + ".f32")
+    _decode_audio_to_file(input_path, raw_path, cfg.sample_rate)
+    audio = np.memmap(raw_path, dtype=np.float32, mode="r").reshape(-1, 2).T
     return audio, cfg, model, device
 
 
@@ -282,35 +313,39 @@ def run_separation_gpu(
     chunks: int = 30,
     use_tta: bool = False,
     precision: str = "fp16",
-) -> None:
+) -> float:
     """
-    GPU phase: run model inference and write output.
+    GPU phase: run model inference and stream the vocals to `output_path` chunk by chunk.
     Call this while holding the GPU semaphore.
+
+    `output_path` gets headerless raw PCM: interleaved stereo f32le at cfg.sample_rate,
+    NOT peak-normalized (no WAV header: it would cap the file at 4 GB, and normalizing needs
+    the global peak, which is only known at the end). Returns that peak (max |sample|); the
+    reader applies the 1/peak gain when it is finite and > 1.0.
     """
-    target_est = separate_vocal(
-        model=model,
-        input_audio=audio,
-        device=device,
-        n_fft=cfg.n_fft,
-        chunks=chunks,
-        sample_rate=cfg.sample_rate,
-        dim_f=cfg.dim_f,
-        hop=cfg.hop,
-        use_tta=use_tta,
-        precision=precision,
-    )
-
-    if cfg.outputs_instrumental():
-        # vocals = mix - instrumental; write into target_est's buffer to avoid a full extra copy
-        np.subtract(audio, target_est, out=target_est)
-    audio_vocals = target_est
-
-    # peak without allocating a full abs() copy of the signal (== np.abs(x).max() for real x)
-    peak = float(max(audio_vocals.max(), -audio_vocals.min()))
-    if np.isfinite(peak) and peak > 1.0:
-        audio_vocals /= peak  # in-place, no extra full-length copy
-
-    soundfile.write(str(output_path), audio_vocals.T, samplerate=cfg.sample_rate)
+    peak = 0.0
+    with open(output_path, "wb") as f:
+        for pos, chunk in iter_separated_chunks(
+            model=model,
+            input_audio=audio,
+            device=device,
+            n_fft=cfg.n_fft,
+            chunks=chunks,
+            sample_rate=cfg.sample_rate,
+            dim_f=cfg.dim_f,
+            hop=cfg.hop,
+            use_tta=use_tta,
+            precision=precision,
+        ):
+            if cfg.outputs_instrumental():
+                # vocals = mix - instrumental, computed in the chunk's own buffer
+                if not chunk.flags.writeable:
+                    chunk = chunk.copy()
+                np.subtract(audio[:, pos : pos + chunk.shape[1]], chunk, out=chunk)
+            # np.max (not builtin max) so a NaN propagates like the old whole-array peak did
+            peak = float(np.max([peak, chunk.max(), -chunk.min()]))
+            np.ascontiguousarray(chunk.T).tofile(f)
+    return peak
 
 
 def separate_vocals_from_file(
@@ -323,7 +358,24 @@ def separate_vocals_from_file(
     use_tta: bool = False,
     precision: str = "fp16",
 ) -> None:
-    audio, cfg, model, device = load_audio_for_separation(
-        input_path, model_id=model_id, repo_id=repo_id, device=device
-    )
-    run_separation_gpu(audio, cfg, model, device, output_path, chunks, use_tta, precision)
+    """Separate vocals into `output_path` as a peak-normalized 16-bit PCM WAV."""
+    input_path, output_path = Path(input_path), Path(output_path)
+    raw_in = input_path.with_name(input_path.name + ".f32")  # written by load_audio_for_separation
+    raw_out = output_path.with_name(output_path.name + ".f32")
+    try:
+        audio, cfg, model, device = load_audio_for_separation(
+            input_path, model_id=model_id, repo_id=repo_id, device=device
+        )
+        peak = run_separation_gpu(audio, cfg, model, device, raw_out, chunks, use_tta, precision)
+        stream = ffmpeg.input(str(raw_out), format="f32le", ac=2, ar=cfg.sample_rate)
+        if np.isfinite(peak) and peak > 1.0:
+            stream = stream.filter("volume", 1.0 / peak)
+        try:
+            stream.output(str(output_path), acodec="pcm_s16le").run(
+                cmd="ffmpeg", capture_stdout=True, capture_stderr=True, overwrite_output=True
+            )
+        except ffmpeg.Error as e:
+            raise RuntimeError(f"Failed to encode separated vocals: {e.stderr.decode()}") from e
+    finally:
+        raw_in.unlink(missing_ok=True)
+        raw_out.unlink(missing_ok=True)
