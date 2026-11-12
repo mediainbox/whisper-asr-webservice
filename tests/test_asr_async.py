@@ -6,6 +6,7 @@ import asyncio
 import io
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -14,6 +15,7 @@ import pytest
 
 FAKE_AUDIO = b"RIFF" + b"\x00" * 36 + b"data" + b"\x00" * 100
 FAKE_AUDIO_NP = np.zeros(16000, dtype=np.float32)
+FAKE_VS_CFG = SimpleNamespace(sample_rate=44100)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +276,7 @@ def _fire_vocals_burst(c, ws, n, separation_s, vocals_wait_s):
     def fake_separation(_audio, _cfg, _model, _device, out_path, **_kwargs):
         time.sleep(separation_s)
         Path(out_path).write_bytes(FAKE_AUDIO)
+        return 0.5
 
     def fire():
         return c.post(
@@ -281,9 +284,9 @@ def _fire_vocals_burst(c, ws, n, separation_s, vocals_wait_s):
             files={"audio_file": ("audio.wav", io.BytesIO(FAKE_AUDIO), "audio/wav")},
         )
 
-    with patch("app.webservice.load_audio_for_separation", return_value=(FAKE_AUDIO_NP, None, None, "cpu")), patch(
+    with patch("app.webservice.load_audio_for_separation", return_value=(FAKE_AUDIO_NP, FAKE_VS_CFG, None, "cpu")), patch(
         "app.webservice.run_separation_gpu", side_effect=fake_separation
-    ), patch("app.webservice.load_audio", return_value=FAKE_AUDIO_NP), patch.object(
+    ), patch("app.webservice.load_audio_path", return_value=FAKE_AUDIO_NP), patch.object(
         ws, "_transcribe_semaphore", asyncio.Semaphore(n)
     ), patch.object(ws.CONFIG, "VOCALS_WAIT_SECONDS", vocals_wait_s):
         with ThreadPoolExecutor(max_workers=n) as pool:
@@ -320,6 +323,30 @@ def test_vocals_gate_rejects_after_wait(client):
     assert all(r.status_code in (200, 503) for r in results)
     assert c.get("/stats").json()["requests"]["active"] == 0
     assert ws._vocals_semaphore._value == ws.CONFIG.VOCALS_CONCURRENCY
+
+
+@pytest.mark.parametrize("peak, gain", [(4.0, 0.25), (0.8, None), (1.0, None)])
+def test_vocals_branch_loads_raw_vocals_with_peak_gain(client, peak, gain):
+    """The vocals branch decodes the raw f32le separation output from disk and normalizes
+    by 1/peak only when the separation peaked above full scale."""
+    c, model = client
+    model.transcribe.return_value = io.StringIO("hello world")
+
+    with patch(
+        "app.webservice.load_audio_for_separation", return_value=(FAKE_AUDIO_NP, FAKE_VS_CFG, None, "cpu")
+    ), patch("app.webservice.run_separation_gpu", return_value=peak), patch(
+        "app.webservice.load_audio_path", return_value=FAKE_AUDIO_NP
+    ) as load_path, patch("app.webservice.load_audio") as load_audio:
+        response = c.post(
+            "/asr?separate_vocals=true",
+            files={"audio_file": ("audio.wav", io.BytesIO(FAKE_AUDIO), "audio/wav")},
+        )
+
+    assert response.status_code == 200
+    load_audio.assert_not_called()
+    (out_path,), kwargs = load_path.call_args
+    assert Path(out_path).name == "vocals.f32"
+    assert kwargs == {"input_kwargs": {"format": "f32le", "ac": 2, "ar": 44100}, "gain": gain}
 
 
 def _fire_transcribe_burst(c, model, ws, n, transcribe_s, transcribe_wait_s):
