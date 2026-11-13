@@ -6,6 +6,17 @@ Unreleased
 
 ### Changed
 
+- faster-whisper's log-mel features are now computed in 2-minute blocks of frames instead of
+  over the whole (post-VAD) clip at once, which allocated ~64 bytes of transient RAM per audio
+  sample: for a 1 h 51 min fragment the feature step peaked at ~6.4 GiB, now ~0.5 GiB (25 min
+  on Linux: 1.43 GiB -> 0.23 GiB, 0.8 s -> 1.7 s). The output matches up to float32 rounding:
+  BLAS may round the mel product differently depending on the matrix width (OpenBLAS: <= 1 ulp,
+  ~6e-8, in ~0.02 % of the values; identical on macOS/Accelerate except a 1-frame last block),
+  and the model consumes the features in float16, ~4 orders of magnitude coarser. Clips up to
+  one block (the usual 30 s segments) take the original code path unchanged. At model load a
+  self-check compares both paths on a synthetic clip (tolerance 1e-6); if they differ (e.g. a
+  future faster-whisper changes its feature extractor) the service logs a warning and keeps the
+  original extractor.
 - Vocal separation (`separate_vocals=true`) now streams through disk: ffmpeg decodes to a
   raw file that is memory-mapped, each 30 s chunk is separated and appended to a raw output
   file, and Whisper's input is read back from it. Host RAM for that stage no longer holds
