@@ -10,6 +10,7 @@ from faster_whisper import WhisperModel
 from whisper.utils import ResultWriter, WriteJSON, WriteSRT, WriteTSV, WriteTXT, WriteVTT
 
 from app.asr_models.asr_model import ASRModel
+from app.asr_models.blocked_features import wrap_feature_extractor
 from app.config import CONFIG
 
 
@@ -26,6 +27,7 @@ class FasterWhisperASR(ASRModel):
             compute_type=CONFIG.MODEL_QUANTIZATION,
             download_root=CONFIG.MODEL_PATH,
         )
+        wrap_feature_extractor(self.model)
 
         # CTranslate2 loads weights to GPU lazily on first inference.
         # Run a warmup pass so weights are in VRAM before /health returns 200.
